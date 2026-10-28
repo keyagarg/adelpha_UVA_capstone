@@ -5,8 +5,23 @@ import pypulseq as pp
 # dependencies from mri4all console project
 import common.logger as logger
 
-
 log = logger.get_logger()
+
+def normalize_rx_channels(channels):
+    #Validate local ADC indices. An empty tuple means transmit only
+    #checks the integer recieved, avoids duplicates/invalide indecies
+    try:
+        channels = tuple(channels)
+    except TypeError as exc:
+        raise ValueError("rx_channels must be an iterable of 0 and/or 1") from exc
+    if any(isinstance(ch, (bool, np.bool_)) or
+           not isinstance(ch, (int, np.integer)) or ch not in (0, 1)
+           for ch in channels):
+        raise ValueError("rx_channels may contain only integer indices 0 and 1")
+    if len(set(channels)) != len(channels):
+        raise ValueError("rx_channels must not contain duplicates")
+    return tuple(int(ch) for ch in channels)
+
 
 class seq2flocra:
     
@@ -27,7 +42,7 @@ class seq2flocra:
     def __init__(self, seq: pp.Sequence = None, seq_file:str = None, system:pp.Opts = None, 
                  center_freq: float=15.58e6,  clk_freq: float = 122.88,
                  rf_amp_max: float = 5e3, tx_zero_end: bool = True,
-                 debug_log: bool = True, **_unused):
+                 debug_log: bool = True, rx_channels=(0,), **_unused): #this should add multiple channels
         """
         From Lincoln's object - trying to match structure for compatibility
         Args:
@@ -56,6 +71,7 @@ class seq2flocra:
         self._tx_zero_end = tx_zero_end
         self._debug_log = debug_log
         self._system = system
+        self._rx_channels = normalize_rx_channels(rx_channels) #set up multi channels
 
         if system is not None:
             log.debug("seq2flocra using provided pypulseq system")
@@ -299,7 +315,15 @@ class seq2flocra:
         flo_dict['grad_vz'] = self.curate(np.array(grad_vz_time_cat), np.array(grad_vz_amp_cat))
         flo_dict['grad_vz2'] = self.curate(np.array(grad_vz2_time_cat), np.array(grad_vz2_amp_cat))
         # Rx
-        flo_dict['rx0_en'] = self.curate(rx0_gate_time_cat, rx0_gate_amp_cat)  # no control on sampling rate
+        adc_gate = self.curate(rx0_gate_time_cat, rx0_gate_amp_cat)
+        for channel in (0, 1):
+            times, values = adc_gate
+            # Explicitly disable unselected receivers giving them 0s
+            flo_dict[f"rx{channel}_en"] = (
+                np.array(times, copy=True),
+                np.array(values, copy=True) if channel in self._rx_channels
+                else np.zeros_like(values),
+            ) #this should add all the receivers to the dict
         
         log.debug("seq2flocra built flodict keys=%s", list(flo_dict.keys()))
         # Save the final dictionary as a property of the object

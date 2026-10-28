@@ -16,7 +16,8 @@ from operator import itemgetter
 import external.seq.adjustments_acq.config as cfg  # pylint: disable=import-error
 import external.marcos_client.experiment as ex  # pylint: disable=import-error
 
-from external.flocra_pulseq.interpreter_pp import seq2flocra
+from external.flocra_pulseq.interpreter_pp import seq2flocra, normalize_rx_channels
+
 
 import common.helper as helper
 from common.constants import *
@@ -56,6 +57,7 @@ def run_pulseq(
     expected_duration_sec=-1,
     hardware_simulation=None,
     system=None,
+    boards=None,
 ):
     """
     Interpret pulseq .seq file through flocra_pulseq
@@ -150,6 +152,7 @@ def run_pulseq(
         gx_max=gx_max,
         gy_max=gy_max,
         gz_max=gz_max,
+        rx_channels=(0, 1) if boards is not None else (0,),
     )
     psi.load_seqfile(seq_file)
     psi.block_events_to_amps_times()
@@ -160,6 +163,34 @@ def run_pulseq(
         instructions = shim(instructions, (shim_x, shim_y, shim_z))
     except Exception as exc:
         log.warning("Could not apply shim offsets: %s", exc)
+
+    if boards is not None:
+        if not boards or 0 not in boards:
+            raise ValueError("boards must include board 0, the primary")
+        board_settings, board_instructions, selected = {}, {}, {}
+        for board_id, settings in boards.items():
+            options = dict(settings)
+            selected[board_id] = normalize_rx_channels(
+                options.pop("rx_channels", (0,) if board_id == 0 else (0, 1))
+            )
+            options.setdefault("port", 11111)
+            options.setdefault("lo_freq", rf_center)
+            if not np.allclose(options.get("rx_t", psi._rx_t), psi._rx_t):
+                raise ValueError("All boards must use the Pulseq ADC sample period")
+            options["rx_t"] = psi._rx_t
+            board_settings[board_id] = options
+            # only primary receives tx and gradient instructions.
+            events = {key: (times.copy(), values.copy())
+                      for key, (times, values) in instructions.items()} if board_id == 0 else {}
+            for channel in (0, 1):
+                times, values = instructions[f"rx{channel}_en"]
+                events[f"rx{channel}_en"] = (
+                    times.copy(), values.copy() if channel in selected[board_id]
+                else np.zeros_like(values),
+                )
+            board_instructions[board_id] = events
+        # Keep the existing instruction plot showing the primarys sequence
+        instructions = board_instructions[0]
 
     if plot_instructions:
         plt.clf()
@@ -179,6 +210,10 @@ def run_pulseq(
 
     if hardware_simulation:
         log.info("Hardware simulation set. Skipping scan.")
+        if boards is not None:
+            return {board_id: {f"rx{ch}": np.array([], dtype=np.complex128)
+                               for ch in channels}
+                    for board_id, channels in selected.items()}, psi._rx_t
         return np.array([], dtype=np.complex128), psi._rx_t
 
     if expt is None:
@@ -191,24 +226,37 @@ def run_pulseq(
         except Exception:
             init_gpa = False
 
-        log.info(
-            "Connecting to MaRCoS at %s:%s (init_gpa=%s)",
-            marcos_cfg.ip_address,
-            marcos_cfg.port,
-            init_gpa,
-        )
-        try:
-            expt = ex.Experiment(
-                lo_freq=rf_center,
-                rx_t=psi._rx_t,
-                init_gpa=init_gpa,
-                gpa_fhdo_offset_time=psi._grad_t / 3,
-                grad_max_update_rate=0.0625,
-                halt_and_reset=True,
+        if boards is None:
+            log.info(
+                "Connecting to MaRCoS at %s:%s (init_gpa=%s)",
+                marcos_cfg.ip_address,
+                marcos_cfg.port,
+                init_gpa,
             )
+        try:
+            if boards is None:
+                expt = ex.Experiment(
+                    lo_freq=rf_center,
+                    rx_t=psi._rx_t,
+                    init_gpa=init_gpa,
+                    gpa_fhdo_offset_time=psi._grad_t / 3,
+                    grad_max_update_rate=0.0625,
+                    halt_and_reset=True,
+                )
+            else:
+                from external.marcos_client.multiExp import MultiExperiment #need to test with patricks modules
+
+                for board_id, options in board_settings.items():
+                    options.setdefault("init_gpa", init_gpa if board_id == 0 else False)
+                    options.setdefault("grad_max_update_rate", 0.0625)
+                    options.setdefault("halt_and_reset", True)
+                board_settings[0].setdefault("gpa_fhdo_offset_time", psi._grad_t / 3)
+                expt = MultiExperiment(boards=board_settings)
         except ConnectionError:
             raise
         except OSError as exc:
+            if boards is not None:
+                raise
             hint = (
                 " Turn off Initialize GPA in Settings if no gradient board is attached."
                 if init_gpa
@@ -217,6 +265,7 @@ def run_pulseq(
             raise ConnectionError(
                 f"MaRCoS at {marcos_cfg.ip_address}:{marcos_cfg.port} dropped the connection: {exc}.{hint}"
             ) from exc
+
     
     # Optionally run gradient linearization calibration
     if grad_cal:
@@ -238,7 +287,8 @@ def run_pulseq(
     #     "grad_vz": psi._flo_dict['grad_vz'],
     #     }
 
-    expt.add_flodict(instructions)
+    expt.add_flodict(instructions if boards is None else board_instructions)
+
 
     # if plot_instructions:
     #     expt.plot_sequence()
@@ -254,6 +304,9 @@ def run_pulseq(
     # log.debug(instructions)
 
     rxd, msgs = expt.run()
+    if boards is not None:
+        rxd = {board_id: {f"rx{ch}": rxd[board_id][f"rx{ch}"] for ch in channels}
+               for board_id, channels in selected.items()}
 
     # log.info('rxd shape:', rxd["rx0"].shape)
 
@@ -270,25 +323,38 @@ def run_pulseq(
         raw_filename = now.strftime("%y-%d-%m %H_%M_%S")
 
     # Optionally save rx output array as .npy file
-    if save_np:
+    if save_np and boards is None:
         filename = Path(case_path) / mri4all_taskdata.RAWDATA / f"{raw_filename}.npy"
         if os.path.exists(filename):
             os.remove(filename)
         np.save(filename, rxd["rx0"])
 
     # Optionally save rx output array as .mat file
-    if save_mat:
+    if save_mat and boards is None:
         filename = Path(case_path) / mri4all_taskdata.RAWDATA / f"{raw_filename}.mat"
         if os.path.exists(filename):
             os.remove(filename)
         sio.savemat(filename, {"flocra_data": rxd["rx0"]})
 
+    if boards is not None:
+        for board_id, channels in rxd.items():
+            for channel, data in channels.items():
+                name = f"{raw_filename}_board{board_id}_{channel}"
+                if save_np:
+                    filename = Path(case_path) / mri4all_taskdata.RAWDATA / f"{name}.npy"
+                    np.save(filename, data)
+                if save_mat:
+                    filename = Path(case_path) / mri4all_taskdata.RAWDATA / f"{name}.mat"
+                    sio.savemat(filename, {"flocra_data": data})
+
     # Very dangerous to call the destructor here!
     # TODO: Check why this is needed and potential impact
-    expt.__del__()
+    if boards is None:
+        expt.__del__()
+
 
     # Return rx output array and rx period
-    return rxd["rx0"], psi._rx_t
+    return rxd["rx0"] if boards is None else rxd, psi._rx_t
 
 
 
