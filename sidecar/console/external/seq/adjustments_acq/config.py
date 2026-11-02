@@ -25,6 +25,14 @@ SHIM_MC = configuration_data.shim_parameters.shim_mc
 DBG_FA_EXC = 90
 DBG_FA_REF = 180
 
+# Optional board selection for FID. None keeps the original single-board RX0 path.
+# To use both receivers on the primary:
+# MARCOS_BOARDS = {0: dict(ip="169.254.44.172", port=11111, rx_channels=(0, 1))}
+# To also use the secondary, add its actual address to that dictionary:
+#     1: dict(ip="SECOND_BOARD_IP", port=11111)
+# Secondary receivers default to (0, 1); use rx_channels=(1,) for RX1 only.
+# This is a Python setting; it is not read from config_acq.json or the GUI.
+MARCOS_BOARDS = None
 
 def update():
     global configuration_data
