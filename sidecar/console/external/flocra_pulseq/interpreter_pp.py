@@ -117,7 +117,7 @@ class seq2flocra:
     def curate(self, times: np.ndarray = None, updates: np.ndarray=None):       #Lincoln's clean-up code
             # Make sure times are ordered, and overwrite duplicates to last inserted update
             time_sorted, unique_idx = np.unique(times, return_index=True)
-            update_sorted = (updates)[unique_idx]
+            update_sorted = np.asarray(updates)[unique_idx]
         
             # Compressed repeated values
             update_compressed_idx = np.concatenate([[0], np.nonzero(update_sorted[1:] - update_sorted[:-1])[0] + 1])
@@ -281,7 +281,7 @@ class seq2flocra:
         # assert(grad_vy_amp_cat.shape == grad_vy_time_cat.shape), 'Issue with Gy waveform, cannot proceed' 
         # assert(grad_vz_amp_cat.shape == grad_vz_time_cat.shape), 'Issue with Gz waveform, cannot proceed' 
             
-        if tx0_amp.shape[0] > 0: 
+        if len(tx0_gate_time) > 0:
             tx0_amp_cat = tx0_amp       
             tx0_time_cat =tx0_time * 1e6 # us
             tx0_gate_amp_cat = tx0_gate_amp
@@ -293,7 +293,7 @@ class seq2flocra:
             tx0_gate_amp_cat = [0.0, 0.0]
             tx0_gate_time_cat = [0.0, block_duration_us]
             
-        if rx0_gate_amp.shape[0] > 0: 
+        if len(rx0_gate_amp) > 1:
             rx0_gate_amp_cat = rx0_gate_amp      
             rx0_gate_time_cat = rx0_gate_time * 1e6 # us
             

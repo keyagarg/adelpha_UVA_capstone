@@ -33,6 +33,28 @@ DBG_FA_REF = 180
 # Secondary receivers default to (0, 1); use rx_channels=(1,) for RX1 only.
 # This is a Python setting; it is not read from config_acq.json or the GUI.
 MARCOS_BOARDS = None
+# Trigger delay and length (microseconds), matching the MultiExperiment example.
+MARCOS_TRIGGER = (10, 20000)
+
+
+def marcos_board_endpoints(boards):
+    """Use the same explicit board addresses for acquisition and preflight."""
+    if not boards or 0 not in boards:
+        raise ValueError("boards must include board 0, the primary")
+    endpoints = {}
+    for board_id, settings in boards.items():
+        if type(board_id) is not int or board_id < 0:
+            raise ValueError("Board IDs must be nonnegative integers")
+        ip = settings.get("ip")
+        port = settings.get("port", 11111)
+        if not isinstance(ip, str) or not ip.strip():
+            raise ValueError(f"Board {board_id} needs an IP address or hostname")
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError(f"Invalid MaRCoS port for board {board_id}")
+        endpoints[board_id] = (ip.strip(), port)
+    if len(set(endpoints.values())) != len(endpoints):
+        raise ValueError("Configured boards must use distinct MaRCoS endpoints")
+    return endpoints
 
 def update():
     global configuration_data

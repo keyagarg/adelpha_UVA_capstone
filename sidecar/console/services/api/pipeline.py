@@ -148,32 +148,6 @@ def process_acquisition(scan_name: str) -> bool:
     log.info("Performing acquisition of %s", scan_name)
     config.load_config()
     _plotting_defaults()
-    try:
-        from external.marcos_client.local_config import apply_scanner_settings
-        from external.marcos_client import local_config as marcos_cfg
-
-        apply_scanner_settings()
-        log.info("MaRCoS target %s:%s", marcos_cfg.ip_address, marcos_cfg.port)
-        if not config.get_config().is_hardware_simulation():
-            from services.ui.control import probe_scanner
-            from services.ui.marcos_boot import ensure_marcos_server, fpga_device
-            from sequences.common.util import reading_json_parameter
-
-            probe = probe_scanner(marcos_cfg.ip_address, port=int(marcos_cfg.port))
-            if probe.get("method") != "tcp":
-                clock = reading_json_parameter().marcos_parameters.fpga_clock_frequency_MHz
-                boot = ensure_marcos_server(
-                    marcos_cfg.ip_address,
-                    port=int(marcos_cfg.port),
-                    device=fpga_device(clock),
-                )
-                if not boot["ok"]:
-                    _set_error(boot["detail"] or "MaRCoS server is not running")
-                    _move_to_fail(scan_name, mri4all_paths.DATA_ACQ)
-                    return False
-    except Exception as exc:
-        log.warning("Could not apply MaRCoS settings: %s", exc)
-
     folder = os.path.join(mri4all_paths.DATA_ACQ, scan_name)
     if not os.path.isfile(os.path.join(folder, mri4all_files.TASK)):
         _set_error(f"Scan {scan_name} has no scan.json")
@@ -191,6 +165,39 @@ def process_acquisition(scan_name: str) -> bool:
         _set_error(f"Sequence {scan_task.sequence} is not installed")
         _move_to_fail(scan_name, mri4all_paths.DATA_ACQ)
         return False
+
+    try:
+        from external.marcos_client.local_config import apply_scanner_settings
+        from external.marcos_client import local_config as marcos_cfg
+
+        apply_scanner_settings()
+        if not config.get_config().is_hardware_simulation():
+            from services.ui.control import probe_scanner
+            from services.ui.marcos_boot import ensure_marcos_server, fpga_device
+            from sequences.common.util import reading_json_parameter
+
+            targets = [(marcos_cfg.ip_address, int(marcos_cfg.port))]
+            if scan_task.sequence == "FID" and cfg.MARCOS_BOARDS is not None:
+                from external.seq.adjustments_acq.scripts import load_multi_experiment
+
+                targets = cfg.marcos_board_endpoints(cfg.MARCOS_BOARDS).values()
+                load_multi_experiment(cfg.MARCOS_BOARDS)
+            for ip, port in targets:
+                log.info("MaRCoS target %s:%s", ip, port)
+                probe = probe_scanner(ip, port=port)
+                if probe.get("method") != "tcp":
+                    clock = reading_json_parameter().marcos_parameters.fpga_clock_frequency_MHz
+                    boot = ensure_marcos_server(ip, port=port, device=fpga_device(clock))
+                    if not boot["ok"]:
+                        _set_error(boot["detail"] or f"MaRCoS server is not running at {ip}:{port}")
+                        _move_to_fail(scan_name, mri4all_paths.DATA_ACQ)
+                        return False
+    except Exception as exc:
+        if scan_task.sequence == "FID" and cfg.MARCOS_BOARDS is not None:
+            _set_error(f"MaRCoS board preflight failed: {exc}")
+            _move_to_fail(scan_name, mri4all_paths.DATA_ACQ)
+            return False
+        log.warning("Could not apply MaRCoS settings: %s", exc)
 
     scan_task.journal.acquisition_start = helper.get_datetime()
     task.write_task(folder, scan_task)

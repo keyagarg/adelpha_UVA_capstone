@@ -7,6 +7,7 @@
 import sys
 import os
 from pathlib import Path
+from importlib import import_module
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io as sio
@@ -29,6 +30,29 @@ from common.ipc import Communicator
 
 
 ipc_comm = Communicator(Communicator.ACQ)
+
+
+def load_multi_experiment(boards):
+    """Load the teammate's bare imports against the configured console modules."""
+    names = ("local_config", "marmachine", "grad_board", "server_comms", "marcompile",
+             "experiment", "experimentController", "experimentFollower", "experimentExternal")
+    previous = {name: sys.modules.get(name) for name in names}
+    try:
+        for name in names:
+            sys.modules[name] = import_module(f"external.marcos_client.{name}")
+        cls = import_module("external.marcos_client.multiExp").MultiExperiment
+    finally:
+        for name, module in previous.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+    if len(boards) > 1 and not callable(getattr(cls, "run_synchronized", None)):
+        raise RuntimeError(
+            "Multiple boards need MultiExperiment.run_synchronized(trig_delay, trig_length) "
+            "to arm followers before starting board 0. The current runner is sequential."
+        )
+    return cls
 
 
 # TODO: Remove references to cfg class from here
@@ -79,8 +103,9 @@ def run_pulseq(
         plot_instructions (bool): Default None, plot instructions for debugging
         gui_test (bool): Default False, load dummy data for gui testing
         system (pp.Opts): Default None, system configuration for pypulseq
+        boards (dict): Optional board IDs mapped to connection settings and rx_channels.
     Returns:
-        numpy.ndarray: Rx data array
+        numpy.ndarray or dict: Legacy RX0 array or receiver arrays keyed by board and channel.
         float: (us) Rx period
     """
     try:
@@ -165,15 +190,14 @@ def run_pulseq(
         log.warning("Could not apply shim offsets: %s", exc)
 
     if boards is not None:
-        if not boards or 0 not in boards:
-            raise ValueError("boards must include board 0, the primary")
+        endpoints = cfg.marcos_board_endpoints(boards)
         board_settings, board_instructions, selected = {}, {}, {}
         for board_id, settings in boards.items():
             options = dict(settings)
             selected[board_id] = normalize_rx_channels(
                 options.pop("rx_channels", (0,) if board_id == 0 else (0, 1))
             )
-            options.setdefault("port", 11111)
+            options["ip"], options["port"] = endpoints[board_id]
             options.setdefault("lo_freq", rf_center)
             if not np.allclose(options.get("rx_t", psi._rx_t), psi._rx_t):
                 raise ValueError("All boards must use the Pulseq ADC sample period")
@@ -189,6 +213,8 @@ def run_pulseq(
                 else np.zeros_like(values),
                 )
             board_instructions[board_id] = events
+        if not any(selected.values()):
+            raise ValueError("Select at least one receive channel")
         # Keep the existing instruction plot showing the primarys sequence
         instructions = board_instructions[0]
 
@@ -198,7 +224,7 @@ def run_pulseq(
         for key in ["tx0"]:
             if key in instructions:
                 axs[0].step(instructions[key][0], abs(instructions[key][1]), where="post", label=key)
-        for key in ["rx0_en"]:
+        for key in (["rx0_en"] if boards is None else ["rx0_en", "rx1_en"]):
             if key in instructions:
                 axs[1].step(instructions[key][0], instructions[key][1], where="post", label=key)
         for key in ["grad_vx", "grad_vy", "grad_vz", "grad_vz2"]:
@@ -244,10 +270,13 @@ def run_pulseq(
                     halt_and_reset=True,
                 )
             else:
-                from external.marcos_client.multiExp import MultiExperiment #need to test with patricks modules
+                MultiExperiment = load_multi_experiment(boards)
 
                 for board_id, options in board_settings.items():
-                    options.setdefault("init_gpa", init_gpa if board_id == 0 else False)
+                    if board_id == 0:
+                        options.setdefault("init_gpa", init_gpa)
+                    else:
+                        options["init_gpa"] = False
                     options.setdefault("grad_max_update_rate", 0.0625)
                     options.setdefault("halt_and_reset", True)
                 board_settings[0].setdefault("gpa_fhdo_offset_time", psi._grad_t / 3)
@@ -267,9 +296,15 @@ def run_pulseq(
             ) from exc
 
     
+    if boards is not None and len(boards) > 1:
+        run_synchronized = getattr(expt, "run_synchronized", None)
+        if not callable(run_synchronized):
+            raise RuntimeError("The supplied multi-board runner must implement run_synchronized")
+
     # Optionally run gradient linearization calibration
     if grad_cal:
-        expt.gradb.calibrate(
+        gradient_expt = expt if boards is None else expt.exps[0]
+        gradient_expt.gradb.calibrate(
             channels=[0, 1, 2],
             max_current=1,
             num_calibration_points=30,
@@ -303,7 +338,12 @@ def run_pulseq(
     log.debug('instructions:.......')
     # log.debug(instructions)
 
-    rxd, msgs = expt.run()
+    if boards is None:
+        rxd, msgs = expt.run()
+    elif len(boards) == 1:
+        rxd, msgs = expt.run(*cfg.MARCOS_TRIGGER)
+    else:
+        rxd, msgs = run_synchronized(*cfg.MARCOS_TRIGGER)
     if boards is not None:
         rxd = {board_id: {f"rx{ch}": rxd[board_id][f"rx{ch}"] for ch in channels}
                for board_id, channels in selected.items()}

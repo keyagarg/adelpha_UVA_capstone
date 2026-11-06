@@ -59,6 +59,7 @@ class SequenceFID(PulseqSequence, registry_key=Path(__file__).stem):
             "FA": 90,
             "ADC_samples": 4096,
             "ADC_duration": 6400,
+            "NSA": self.param_NSA,
         }
 
     def set_parameters(self, parameters, scan_task) -> bool:
@@ -126,7 +127,52 @@ class SequenceFID(PulseqSequence, registry_key=Path(__file__).stem):
             gui_test=False,
             case_path=self.get_working_folder(),
             raw_filename="raw",
+            boards=cfg.MARCOS_BOARDS,
         )
+
+        # MultiExperiment returns {board_id: {"rx0": array, "rx1": array}}
+        #Handle that result before the original single array code
+        if isinstance(rxd, dict):
+            if not any(np.asarray(data).size for channels in rxd.values()
+                       for data in channels.values()):
+                log.info("No raw data (hardware simulation or empty acquisition)")
+                return True
+            first_channel = True
+            for board_id, channels in rxd.items():
+                for channel, data in channels.items():
+                    data = np.asarray(data)
+                    if data.ndim != 1 or data.size == 0:
+                        raise ValueError(f"Invalid or empty data for board {board_id}/{channel}")
+                    # same averaging and transform as the original path
+                    data_rs = np.reshape(
+                        data, (int(data.shape[0] / self.param_NSA), self.param_NSA), order='F'
+                    )
+                    data_avg = np.average(data_rs, axis=1)
+                    spectrum = np.fft.fftshift(np.fft.ifft(np.fft.fftshift(data_avg)))
+                    label = f"Board {board_id} {channel.upper()}"
+                    for kind, values, viewer in (
+                            ("adc", np.abs(data_avg), 1),
+                            ("fft", np.abs(spectrum), 2),
+                    ):
+                        plt.clf()
+                        plt.title(f"{kind.upper()} - {label}")
+                        plt.grid(True, color="#333")
+                        plt.plot(values)
+                        file_path = f"other/{kind}_board{board_id}_{channel}.plot"
+                        with open(Path(self.get_working_folder()) / file_path, "wb") as file:
+                            pickle.dump(plt.gcf(), file)
+                        result = ResultItem()
+                        result.name = f"{kind.upper()} {label}"
+                        result.description = f"{kind.upper()} of acquired signal from {label}"
+                        result.type = "plot"
+                        result.autoload_viewer = viewer if first_channel else 0
+                        result.primary = first_channel and kind == "fft"
+                        result.file_path = file_path
+                        scan_task.results.append(result)
+                    first_channel = False
+            # run_pulseq(save_np=True) already saved each board/channel raw array.
+            log.info("Done running sequence " + self.get_name())
+            return True
 
         if rxd is None or getattr(rxd, "size", 0) == 0:
             log.info("No raw data (hardware simulation or empty acquisition)")
