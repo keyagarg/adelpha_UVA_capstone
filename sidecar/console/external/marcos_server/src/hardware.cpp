@@ -6,6 +6,7 @@
 #include <chrono>
 #include <vector>
 #include <sys/mman.h>
+#include <cstdlib>
 
 #ifdef VERILATOR_BUILD
 #include "marga_model.hpp"
@@ -36,6 +37,14 @@ int hardware::run_request(server_action &sa) {
 		++problems;
 		sa.add_error("no commands present or incorrectly formatted request");
 	}
+
+	auto eo = sa.get_command_and_start_reply("enable_output", status);
+	if (status == 1) {
+		++commands_understood;
+		wr32(_enable_output, 1); // send the enable output command to the hardware
+		mpack_write(wr, c_ok);
+	}
+
 
 	// Halt and reset; returns true if the FSM has already halted (may take up to 2ms to halt the HDL if it's counting down
 	auto hr = sa.get_command_and_start_reply("halt_and_reset", status);
@@ -585,7 +594,10 @@ void hardware::init_mem() {
 		throw hw_error("failed to access memory device - check sudo permissions and/or platform");
 	}
 #else
-	char tempfile[100] = "/tmp/marcos_server_mem";
+	const char* tempfile = std::getenv("MARGA_MEM");
+	if (!tempfile || !*tempfile) {
+		tempfile = "/tmp/marcos_server_mem";
+	}
 
 	int fd = open(tempfile, O_RDWR);
 	if (fd < 0) {
@@ -622,6 +634,8 @@ void hardware::init_mem() {
 	_rx1_i_data = _mar_base + 12; // RX1 i data
 	_rx0_q_data = _mar_base + 13; // RX0 q data
 	_rx1_q_data = _mar_base + 14; // RX1 q data
+
+	_enable_output = _mar_base + 15; // enable output command
 
 	// /2 since mem is halfway in address space, /4 to convert to 32-bit instead of byte addressing
 	_mar_mem = reinterpret_cast<volatile char *>(_mar_base + MARGA_SIZE/2/4);
