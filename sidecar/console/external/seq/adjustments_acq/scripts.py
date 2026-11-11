@@ -47,6 +47,8 @@ def load_multi_experiment(boards):
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
+    if not callable(getattr(cls, "run_synchronized", None)):        # Add a default run_synchronized method that just calls run() for single-board use
+        cls.run_synchronized = cls.run
     if len(boards) > 1 and not callable(getattr(cls, "run_synchronized", None)):
         raise RuntimeError(
             "Multiple boards need MultiExperiment.run_synchronized(trig_delay, trig_length) "
