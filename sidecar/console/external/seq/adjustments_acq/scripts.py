@@ -47,13 +47,6 @@ def load_multi_experiment(boards):
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
-    if not callable(getattr(cls, "run_synchronized", None)):        # Add a default run_synchronized method that just calls run() for single-board use
-        cls.run_synchronized = cls.run
-    if len(boards) > 1 and not callable(getattr(cls, "run_synchronized", None)):
-        raise RuntimeError(
-            "Multiple boards need MultiExperiment.run_synchronized(trig_delay, trig_length) "
-            "to arm followers before starting board 0. The current runner is sequential."
-        )
     return cls
 
 
@@ -298,11 +291,6 @@ def run_pulseq(
             ) from exc
 
     
-    if boards is not None and len(boards) > 1:
-        run_synchronized = getattr(expt, "run_synchronized", None)
-        if not callable(run_synchronized):
-            raise RuntimeError("The supplied multi-board runner must implement run_synchronized")
-
     # Optionally run gradient linearization calibration
     if grad_cal:
         gradient_expt = expt if boards is None else expt.exps[0]
@@ -342,10 +330,8 @@ def run_pulseq(
 
     if boards is None:
         rxd, msgs = expt.run()
-    elif len(boards) == 1:
-        rxd, msgs = expt.run(*cfg.MARCOS_TRIGGER)
     else:
-        rxd, msgs = run_synchronized(*cfg.MARCOS_TRIGGER)
+        rxd, msgs = expt.run(*cfg.MARCOS_TRIGGER)
     if boards is not None:
         rxd = {board_id: {f"rx{ch}": rxd[board_id][f"rx{ch}"] for ch in channels}
                for board_id, channels in selected.items()}
