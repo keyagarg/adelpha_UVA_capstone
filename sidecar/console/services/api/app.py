@@ -30,6 +30,9 @@ from services.api import events
 from services.api.models import (
     DeviceMarcosStartResponse,
     DevicePingResponse,
+    EmiCapture,
+    EmiMeasureRequest,
+    EmiStatus,
     EventRespondRequest,
     ExamResponse,
     ExamStartRequest,
@@ -457,6 +460,56 @@ def scan_psd(scan_id: str, body: ScanPsdRequest = Body(default_factory=ScanPsdRe
     except Exception as exc:
         raise HTTPException(400, f"Could not plot the sequence: {exc}") from exc
     return ScanPsdResponse(folder=folder)
+
+
+def _emi_context() -> tuple[bool, Optional[dict], float]:
+    """Simulation flag, configured boards, and Larmor frequency (Hz) for the EMI tool."""
+    from sequences.common.util import reading_json_parameter
+
+    try:
+        simulation = config.get_config().is_hardware_simulation()
+    except Exception:
+        simulation = True
+    try:
+        import external.seq.adjustments_acq.config as acq_cfg
+
+        boards = acq_cfg.MARCOS_BOARDS
+    except Exception as exc:
+        log.warning("Could not read the MaRCoS board list: %s", exc)
+        boards = None
+    larmor_mhz = reading_json_parameter().rf_parameters.larmor_frequency_MHz
+    return simulation, boards, float(larmor_mhz) * 1e6
+
+
+@app.get("/emi/status", response_model=EmiStatus)
+def emi_status():
+    """Report whether the EMI visualizer can measure, and on which channels."""
+    from services.api import emi, pipeline
+
+    simulation, boards, _ = _emi_context()
+    return emi.status(simulation=simulation, boards=boards, busy=pipeline.acq_busy())
+
+
+@app.post("/emi/measure", response_model=EmiCapture)
+def emi_measure(body: EmiMeasureRequest = Body(default_factory=EmiMeasureRequest)):
+    """Record one noise burst on the EMI receive channels and return its spectra."""
+    from services.api import emi, pipeline
+
+    if pipeline.acq_busy():
+        raise HTTPException(409, "A scan is running. Wait for it to finish before measuring EMI.")
+    simulation, boards, center_frequency_hz = _emi_context()
+    try:
+        return emi.measure(
+            simulation=simulation,
+            boards=boards,
+            center_frequency_hz=center_frequency_hz,
+            n_samples=body.n_samples,
+            adc_duration_us=body.adc_duration_us,
+            averages=body.averages,
+            include_reference=body.include_reference,
+        )
+    except emi.EmiUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @app.get("/about")
