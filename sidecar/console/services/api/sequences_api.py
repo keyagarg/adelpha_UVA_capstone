@@ -90,7 +90,7 @@ FALLBACK: List[SequenceInfo] = [
     SequenceInfo(
         id="FID",
         name="FID",
-        defaults={"FA": 90, "ADC_samples": 4096, "ADC_duration": 6400},
+        defaults={"FA": 90, "ADC_samples": 4096, "ADC_duration": 6400, "NSA": 1}, # NSA default added to match the default in FID.py
     ),
     SequenceInfo(
         id="noisescan",

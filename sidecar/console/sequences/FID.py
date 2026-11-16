@@ -68,9 +68,9 @@ class SequenceFID(PulseqSequence, registry_key=Path(__file__).stem):
             self.param_FA = parameters["FA"]
             self.param_ADC_samples = parameters["ADC_samples"]
             self.param_ADC_duration = parameters["ADC_duration"]
-            self.param_NSA = parameters["NSA"]
-        except:
-            self.problem_list.append("Invalid parameters provided")
+            self.param_NSA = parameters.get("NSA", self.param_NSA) # This should result in the default value being used if NSA is not provided
+        except Exception as exc:
+            self.problem_list.append(f"FID parameter error: {exc!r} | got {parameters!r}") # Temp changes
             return False
         return self.validate_parameters(scan_task)
 
