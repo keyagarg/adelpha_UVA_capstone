@@ -1,23 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity } from "lucide-react";
+import { useEffect, useMemo } from "react";
+import { Activity, Play, Square } from "lucide-react";
 
 import { lightThemePalette, useConsoleTheme } from "../consoleTheme";
-import {
-  fetchEmiStatus,
-  measureEmi,
-  type EmiCapture,
-  type EmiStatus,
-  type EmiTrace,
-  type PlotAxes,
-} from "../mri/api";
+import type { EmiCapture, EmiTrace, PlotAxes } from "../mri/api";
 import { ScientificPlot } from "../ScientificPlot";
+import { traceKey, useEmiStore } from "./emiStore";
 import "./emiVisualizer.css";
 
 type ModeColor = { dark: string; light: string };
 
 /**
  * One fixed colour per receive channel, keyed by board and channel so a trace
- * keeps its colour whichever other traces are present.
+ * keeps its colour whichever other traces are present or hidden.
  */
 const TRACE_COLORS: Record<string, ModeColor> = {
   "0-rx1": { dark: "#3987e5", light: "#2a78d6" },
@@ -29,9 +23,7 @@ const NEUTRAL_COLOR: ModeColor = { dark: "#9ca3af", light: "#6b7280" };
 
 function traceColor(trace: EmiTrace, light: boolean): string {
   const color =
-    trace.role === "mri_reference"
-      ? NEUTRAL_COLOR
-      : TRACE_COLORS[`${trace.board}-${trace.channel}`] ?? NEUTRAL_COLOR;
+    trace.role === "mri_reference" ? NEUTRAL_COLOR : TRACE_COLORS[traceKey(trace)] ?? NEUTRAL_COLOR;
   return light ? color.light : color.dark;
 }
 
@@ -39,19 +31,18 @@ function formatMHz(hz: number, digits = 3): string {
   return `${(hz / 1e6).toFixed(digits)} MHz`;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /** One overlaid spectrum plot: x is the offset from the centre frequency in kHz. */
-function captureToAxes(capture: EmiCapture, light: boolean): PlotAxes[] {
+function captureToAxes(
+  capture: EmiCapture,
+  light: boolean,
+  hidden: Record<string, boolean>,
+  peaks: Record<string, number>,
+): PlotAxes[] {
   const center = capture.center_frequency_hz;
   const x = capture.frequency_hz.map((hz) => (hz - center) / 1e3);
   const halfSpanKHz = capture.bandwidth_hz / 2e3;
-  let peak = 0;
-  for (const trace of capture.traces) {
-    for (const value of trace.magnitude) if (value > peak) peak = value;
-  }
+  const visible = capture.traces.filter((trace) => !hidden[traceKey(trace)]);
+  const peak = Math.max(0, ...visible.map((trace) => peaks[traceKey(trace)] ?? trace.peak_magnitude));
   return [
     {
       title: "",
@@ -61,7 +52,7 @@ function captureToAxes(capture: EmiCapture, light: boolean): PlotAxes[] {
       xmax: halfSpanKHz,
       ymin: 0,
       ymax: peak > 0 ? peak * 1.1 : 1,
-      series: capture.traces.map((trace) => ({
+      series: visible.map((trace) => ({
         name: trace.label,
         x,
         y: trace.magnitude,
@@ -72,52 +63,49 @@ function captureToAxes(capture: EmiCapture, light: boolean): PlotAxes[] {
 }
 
 /**
- * EMI stage of the Digital Twin viewport. Records a noise burst on the EMI
+ * EMI stage of the Digital Twin viewport. Records noise bursts on the EMI
  * receive channels through the Imaging Console service and plots one spectrum
- * per channel.
+ * per channel. `active` is false while another workspace covers the viewport.
  */
-export function EmiVisualizer() {
+export function EmiVisualizer({ active = true }: { active?: boolean }) {
   const [theme] = useConsoleTheme();
   const light = Boolean(lightThemePalette(theme));
-  const [status, setStatus] = useState<EmiStatus | null>(null);
-  const [capture, setCapture] = useState<EmiCapture | null>(null);
-  const [measuring, setMeasuring] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const alive = useRef(true);
+  const status = useEmiStore((s) => s.status);
+  const capture = useEmiStore((s) => s.capture);
+  const measuring = useEmiStore((s) => s.measuring);
+  const running = useEmiStore((s) => s.running);
+  const error = useEmiStore((s) => s.error);
+  const includeReference = useEmiStore((s) => s.includeReference);
+  const hidden = useEmiStore((s) => s.hidden);
+  const peaks = useEmiStore((s) => s.peaks);
+  const refreshStatus = useEmiStore((s) => s.refreshStatus);
+  const measureOnce = useEmiStore((s) => s.measureOnce);
+  const start = useEmiStore((s) => s.start);
+  const stop = useEmiStore((s) => s.stop);
+  const setIncludeReference = useEmiStore((s) => s.setIncludeReference);
+  const toggleTrace = useEmiStore((s) => s.toggleTrace);
+
+  // Check availability on open; never leave the boards acquiring unwatched.
+  useEffect(() => {
+    void refreshStatus();
+    return () => stop();
+  }, [refreshStatus, stop]);
 
   useEffect(() => {
-    alive.current = true;
-    fetchEmiStatus()
-      .then((next) => {
-        if (alive.current) setStatus(next);
-      })
-      .catch((err) => {
-        if (alive.current) setError(`Could not reach the Imaging Console service: ${errorMessage(err)}`);
-      });
-    return () => {
-      alive.current = false;
-    };
-  }, []);
+    if (!active) stop();
+  }, [active, stop]);
 
-  async function measureOnce() {
-    setMeasuring(true);
-    setError(null);
-    try {
-      const next = await measureEmi();
-      if (alive.current) setCapture(next);
-    } catch (err) {
-      if (alive.current) setError(errorMessage(err));
-    } finally {
-      if (alive.current) setMeasuring(false);
-    }
-  }
-
-  const axes = useMemo(() => (capture ? captureToAxes(capture, light) : null), [capture, light]);
+  const axes = useMemo(
+    () => (capture ? captureToAxes(capture, light, hidden, peaks) : null),
+    [capture, light, hidden, peaks],
+  );
 
   const unavailable = status !== null && !status.available;
   const notice = error ?? (unavailable ? status?.reason || "EMI measurement is unavailable." : null);
   const simulated = capture ? capture.source === "simulated" : status?.simulation ?? false;
   const showSource = capture !== null || status !== null;
+  const referenceOffered = status?.channels.some((channel) => channel.role === "mri_reference") ?? false;
+  const allHidden = capture !== null && axes !== null && axes[0].series.length === 0;
 
   return (
     <div className="emi-view">
@@ -130,6 +118,7 @@ export function EmiVisualizer() {
                 {simulated ? "Simulated" : "Measured"}
               </span>
             ) : null}
+            {running ? <span className="emi-source emi-live">Running</span> : null}
           </h2>
           <p>
             {capture
@@ -137,15 +126,42 @@ export function EmiVisualizer() {
               : "In-band noise on the EMI receive channels."}
           </p>
         </div>
-        <button
-          type="button"
-          className="emi-btn emi-btn-primary"
-          onClick={measureOnce}
-          disabled={measuring || unavailable}
-        >
-          <Activity size={15} strokeWidth={1.75} aria-hidden />
-          {measuring ? "Measuring…" : "Measure once"}
-        </button>
+        <div className="emi-view-actions">
+          <label className="emi-check">
+            <input
+              type="checkbox"
+              checked={includeReference}
+              disabled={!referenceOffered}
+              onChange={(event) => setIncludeReference(event.target.checked)}
+            />
+            MRI reference channel
+          </label>
+          <button
+            type="button"
+            className="emi-btn"
+            onClick={() => void measureOnce()}
+            disabled={measuring || running || unavailable}
+          >
+            <Activity size={15} strokeWidth={1.75} aria-hidden />
+            {measuring ? "Measuring…" : "Measure once"}
+          </button>
+          {running ? (
+            <button type="button" className="emi-btn emi-btn-primary" onClick={stop}>
+              <Square size={14} strokeWidth={1.75} aria-hidden />
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="emi-btn emi-btn-primary"
+              onClick={start}
+              disabled={measuring || unavailable}
+            >
+              <Play size={14} strokeWidth={1.75} aria-hidden />
+              Run
+            </button>
+          )}
+        </div>
       </header>
 
       {notice ? (
@@ -155,11 +171,13 @@ export function EmiVisualizer() {
       ) : null}
 
       <div className="emi-view-plot">
-        {axes ? (
+        {axes && !allHidden ? (
           <ScientificPlot axes={axes} />
         ) : (
           <p className="emi-view-empty">
-            No capture yet. Select Measure once to record a noise burst on the EMI channels.
+            {allHidden
+              ? "Every channel is hidden. Tick a channel in the table to show it."
+              : "No capture yet. Select Measure once for a single noise burst, or Run to keep measuring."}
           </p>
         )}
       </div>
@@ -175,18 +193,24 @@ export function EmiVisualizer() {
             </tr>
           </thead>
           <tbody>
-            {capture.traces.map((trace) => (
-              <tr key={`${trace.board}-${trace.channel}`}>
-                <th scope="row">
-                  <span className="emi-swatch" style={{ background: traceColor(trace, light) }} aria-hidden />
-                  {trace.label}
-                  {trace.role === "mri_reference" ? " (MRI reference)" : ""}
-                </th>
-                <td>{trace.rms.toExponential(2)}</td>
-                <td>{formatMHz(trace.peak_frequency_hz, 4)}</td>
-                <td>{trace.peak_magnitude.toExponential(2)}</td>
-              </tr>
-            ))}
+            {capture.traces.map((trace) => {
+              const key = traceKey(trace);
+              return (
+                <tr key={key} className={hidden[key] ? "is-hidden" : undefined}>
+                  <th scope="row">
+                    <label className="emi-check">
+                      <input type="checkbox" checked={!hidden[key]} onChange={() => toggleTrace(key)} />
+                      <span className="emi-swatch" style={{ background: traceColor(trace, light) }} aria-hidden />
+                      {trace.label}
+                      {trace.role === "mri_reference" ? " (MRI reference)" : ""}
+                    </label>
+                  </th>
+                  <td>{trace.rms.toExponential(2)}</td>
+                  <td>{formatMHz(trace.peak_frequency_hz, 4)}</td>
+                  <td>{trace.peak_magnitude.toExponential(2)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       ) : null}

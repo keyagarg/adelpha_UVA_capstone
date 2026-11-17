@@ -92,7 +92,7 @@ export function TwinViewport({
       </Suspense>
     ) : stageMode === "emi" ? (
       <Suspense fallback={null}>
-        <EmiVisualizer />
+        <EmiVisualizer active={workspace === "digital-twin"} />
       </Suspense>
     ) : (
       <ErrorBoundary

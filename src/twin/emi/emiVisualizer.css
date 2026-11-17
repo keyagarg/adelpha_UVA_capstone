@@ -50,6 +50,36 @@
   border-style: dashed;
 }
 
+.emi-live {
+  border-color: var(--m4-accent);
+  color: var(--m4-text);
+}
+
+.emi-view-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.emi-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.emi-check input {
+  margin: 0;
+  accent-color: var(--m4-accent);
+}
+
+.emi-check:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .emi-btn {
   display: inline-flex;
   align-items: center;
@@ -150,11 +180,14 @@ html[data-console-theme="mri4all"] .emi-btn-primary {
   font-variant-numeric: tabular-nums;
 }
 
+.emi-view-readout tr.is-hidden td,
+.emi-view-readout tr.is-hidden th {
+  color: var(--m4-muted);
+}
+
 .emi-swatch {
   display: inline-block;
   width: 14px;
   height: 3px;
-  margin-right: 8px;
   border-radius: 2px;
-  vertical-align: middle;
 }
