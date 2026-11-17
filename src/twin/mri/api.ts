@@ -772,6 +772,8 @@ export type PlotSeries = {
   name: string;
   x: Array<number | null>;
   y: Array<number | null>;
+  /** Optional line colour. Plots from the console omit it and use the theme. */
+  color?: string;
 };
 
 export type PlotAxes = {
@@ -784,6 +786,63 @@ export type PlotAxes = {
   ymax: number;
   series: PlotSeries[];
 };
+
+export type EmiChannel = {
+  board: number;
+  channel: string;
+  label: string;
+  role: "emi" | "mri_reference";
+};
+
+export type EmiTrace = EmiChannel & {
+  magnitude: number[];
+  time_magnitude: number[];
+  rms: number;
+  peak_frequency_hz: number;
+  peak_magnitude: number;
+};
+
+/** One noise burst recorded on every EMI receive channel. */
+export type EmiCapture = {
+  capture_id: string;
+  timestamp: string;
+  source: "simulated" | "measured";
+  center_frequency_hz: number;
+  sample_period_s: number;
+  bandwidth_hz: number;
+  n_samples: number;
+  averages: number;
+  units: string;
+  frequency_hz: number[];
+  traces: EmiTrace[];
+};
+
+export type EmiStatus = {
+  available: boolean;
+  busy: boolean;
+  simulation: boolean;
+  channels: EmiChannel[];
+  reason: string;
+};
+
+export type EmiMeasureOptions = {
+  n_samples?: number;
+  adc_duration_us?: number;
+  averages?: number;
+  include_reference?: boolean;
+};
+
+export async function fetchEmiStatus(): Promise<EmiStatus> {
+  return mriFetch("/emi/status");
+}
+
+export async function measureEmi(options: EmiMeasureOptions = {}): Promise<EmiCapture> {
+  return mriFetch("/emi/measure", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(options),
+  });
+}
 
 export type StudyPreview = {
   kind: "dicom" | "plot" | "empty";

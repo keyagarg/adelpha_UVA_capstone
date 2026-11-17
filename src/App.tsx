@@ -52,7 +52,7 @@ export default function App() {
 
   const [showDashboard, setShowDashboard] = useState(false);
   const [viewportTool, setViewportTool] = useState<ViewportToolId>("magnet");
-  const [stageMode, setStageMode] = useState<"magnet" | "camera">("magnet");
+  const [stageMode, setStageMode] = useState<"magnet" | "camera" | "emi">("magnet");
   const [cameraPreviewStream, setCameraPreviewStream] = useState<MediaStream | null>(null);
   const [expandedCard, setExpandedCard] = useState<DashboardCard | null>(null);
 
@@ -129,6 +129,13 @@ export default function App() {
       setCameraPreviewStream(null);
       series.resetPoseHistories();
       setExpandedCard(null);
+    }
+    if (id === "emi") {
+      setStageMode("emi");
+      setCameraPreviewStream(null);
+      series.resetPoseHistories();
+      setExpandedCard(null);
+      setShowDashboard(false);
     }
   }
 

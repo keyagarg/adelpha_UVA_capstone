@@ -1,0 +1,160 @@
+/* EMI stage of the Digital Twin viewport. Theme tokens only; no fixed palette. */
+.emi-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* Left padding keeps the content clear of the floating Tools rail. */
+  padding: 14px 18px 14px 76px;
+  box-sizing: border-box;
+  background: var(--m4-bg);
+  color: var(--m4-text);
+}
+
+.emi-view-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.emi-view-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.emi-view-heading p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--m4-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.emi-source {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--theme-border, var(--border));
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--m4-muted);
+}
+
+.emi-source.is-simulated {
+  border-style: dashed;
+}
+
+.emi-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--theme-border, var(--border));
+  background: var(--m4-chrome);
+  color: var(--m4-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.emi-btn-primary {
+  background: var(--m4-accent);
+  border-color: transparent;
+  color: var(--theme-on-accent, #fff);
+}
+
+html[data-console-theme="mri4all"] .emi-btn-primary {
+  --theme-on-accent: #171405;
+}
+
+.emi-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.emi-btn:focus-visible {
+  outline: 2px solid var(--m4-accent);
+  outline-offset: 2px;
+}
+
+.emi-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.emi-view-notice {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--m4-warn);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.emi-view-plot {
+  position: relative;
+  flex: 1;
+  min-height: 180px;
+  border: 1px solid var(--theme-border, var(--border));
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+}
+
+/* The stage stretches every canvas for the 3D view; the plot sizes its own. */
+.emi-view-plot canvas {
+  flex: none;
+}
+
+.emi-view-empty {
+  margin: auto;
+  padding: 24px;
+  max-width: 360px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--m4-muted);
+}
+
+.emi-view-readout {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.emi-view-readout th,
+.emi-view-readout td {
+  padding: 6px 10px;
+  text-align: left;
+  border-top: 1px solid var(--theme-border, var(--border));
+}
+
+.emi-view-readout thead th {
+  border-top: 0;
+  font-weight: 500;
+  color: var(--m4-muted);
+}
+
+.emi-view-readout tbody th {
+  font-weight: 500;
+}
+
+.emi-view-readout td {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.emi-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  margin-right: 8px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
