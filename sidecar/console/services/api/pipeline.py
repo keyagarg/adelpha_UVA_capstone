@@ -315,7 +315,11 @@ def _acq_loop() -> None:
             ):
                 _set_error(f"Failed to move {selected} into acquisition")
             else:
-                process_acquisition(selected)
+                # Wait out an EMI capture (a few hundred ms) before driving the boards.
+                from services.api import emi
+
+                with emi.hardware_lock:
+                    process_acquisition(selected)
         except Exception as exc:
             _set_error(f"Acquisition loop error: {exc}")
             log.exception("Acquisition loop crashed")

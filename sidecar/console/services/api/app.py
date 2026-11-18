@@ -500,8 +500,14 @@ def emi_measure(body: EmiMeasureRequest = Body(default_factory=EmiMeasureRequest
     if pipeline.acq_busy():
         raise HTTPException(409, "A scan is running. Wait for it to finish before measuring EMI.")
     simulation, boards, center_frequency_hz = _emi_context()
+    acquire = None
+    if not simulation:
+        from services.api import emi_acq
+
+        acquire = emi_acq.acquire
     try:
         return emi.measure(
+            acquire=acquire,
             simulation=simulation,
             boards=boards,
             center_frequency_hz=center_frequency_hz,
@@ -510,7 +516,10 @@ def emi_measure(body: EmiMeasureRequest = Body(default_factory=EmiMeasureRequest
             averages=body.averages,
             include_reference=body.include_reference,
         )
+    except emi.EmiBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
     except emi.EmiUnavailable as exc:
+        log.warning("EMI capture unavailable: %s", exc)
         raise HTTPException(503, str(exc)) from exc
 
 

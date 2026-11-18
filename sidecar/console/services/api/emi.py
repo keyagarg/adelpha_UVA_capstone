@@ -5,9 +5,12 @@ same time. Board 0 RX0 carries the MRI signal, so the EMI tool listens on the
 other receivers and only adds board 0 RX0 when the caller asks for it as a
 reference trace.
 
+Simulated and measured bursts share one path: both produce time samples that
+go through the same FFT and payload code. ``simulate_samples`` generates them
+here; real bursts come from ``emi_acq.acquire``, which ``app.py`` passes in.
 
-This module depends on numpy alone. Reading the scanner configuration and the
-HTTP layer stay in ``app.py``.
+This module depends on numpy alone. Reading the scanner configuration, the
+MaRCoS acquisition, and the HTTP layer live elsewhere.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -40,6 +43,27 @@ ChannelKey = Tuple[int, int]
 
 class EmiUnavailable(RuntimeError):
     """The EMI tool cannot measure right now; the message says why."""
+
+
+class EmiBusy(EmiUnavailable):
+    """The boards are in use by a scan or by another EMI capture."""
+
+
+NO_BOARDS_REASON = (
+    "No MaRCoS boards are configured. Set MARCOS_BOARDS in "
+    "sidecar/console/external/seq/adjustments_acq/config.py, or turn on Hardware Simulation."
+)
+
+# Held for the length of one capture, and by the acquisition pipeline for the
+# length of one scan, so a burst and a scan never drive the boards together.
+hardware_lock = threading.Lock()
+
+# (boards, channels, n_samples, adc_duration_us, averages)
+#   -> (samples, sample_period_s, center_frequency_hz)
+AcquireFn = Callable[
+    [dict, List[Tuple[int, int, str]], int, float, int],
+    Tuple[Dict["ChannelKey", np.ndarray], float, float],
+]
 
 
 def emi_channels(boards: Optional[dict], include_reference: bool = False) -> List[Tuple[int, int, str]]:
@@ -198,7 +222,6 @@ def build_capture(
 
 # --- Capture state ----------------------------------------------------------
 
-_lock = threading.Lock()
 _step = 0
 # Raw samples of the most recent capture, kept so a later stage can save them.
 _latest: Optional[dict] = None
@@ -219,34 +242,50 @@ def measure(
     averages: int = DEFAULT_AVERAGES,
     include_reference: bool = False,
     rng: Optional[np.random.Generator] = None,
+    acquire: Optional[AcquireFn] = None,
 ) -> dict:
     """Record one capture and return its payload.
 
-    Only one capture runs at a time. Real acquisition arrives in stage 5; until
-    then this raises ``EmiUnavailable`` when hardware simulation is off.
+    With ``simulation`` the samples are generated here. Otherwise ``acquire``
+    records them on the boards. Only one capture runs at a time, and never
+    during a scan: ``EmiBusy`` is raised instead of waiting.
     """
     global _step, _latest
-    if not simulation:
-        raise EmiUnavailable(
-            "Real EMI acquisition is not available yet. Turn on Hardware Simulation to use simulated data."
-        )
+    if not simulation and not boards:
+        raise EmiUnavailable(NO_BOARDS_REASON)
+    if not simulation and acquire is None:
+        raise EmiUnavailable("No acquisition backend is available for measured EMI captures")
     channels = emi_channels(boards, include_reference)
     if not channels:
         raise EmiUnavailable("No EMI receive channels are configured")
-    sample_period_s = adc_duration_us * 1e-6 / n_samples
     roles = {(board, channel): role for board, channel, role in channels}
 
-    with _lock:
-        samples = simulate_samples(channels, n_samples, sample_period_s, averages, step=_step, rng=rng)
+    if not hardware_lock.acquire(blocking=False):
+        raise EmiBusy("The boards are busy with a scan or another EMI capture.")
+    try:
+        if simulation:
+            sample_period_s = adc_duration_us * 1e-6 / n_samples
+            samples = simulate_samples(channels, n_samples, sample_period_s, averages, step=_step, rng=rng)
+        else:
+            try:
+                samples, sample_period_s, center_frequency_hz = acquire(
+                    boards, channels, n_samples, adc_duration_us, averages
+                )
+            except EmiUnavailable:
+                raise
+            except Exception as exc:
+                raise EmiUnavailable(f"EMI acquisition failed: {exc}") from exc
         _step += 1
         capture = build_capture(
             samples,
             roles,
-            source="simulated",
+            source="simulated" if simulation else "measured",
             center_frequency_hz=center_frequency_hz,
             sample_period_s=sample_period_s,
         )
         _latest = {"capture": capture, "samples": samples}
+    finally:
+        hardware_lock.release()
     return capture
 
 
@@ -257,8 +296,7 @@ def save_latest(capture_id: str, emi_dir) -> dict:
     channel, shaped ``(averages, n_samples)``. ``capture.json`` holds the
     metadata and per-channel summary, without the plotted arrays.
     """
-    with _lock:
-        latest = _latest
+    latest = _latest
     if latest is None or latest["capture"]["capture_id"] != capture_id:
         raise EmiUnavailable("That capture is no longer held in memory. Measure again, then save.")
     capture = latest["capture"]
@@ -292,12 +330,12 @@ def status(*, simulation: bool, boards: Optional[dict], busy: bool) -> dict:
         for board, channel, role in emi_channels(boards, include_reference=True)
     ]
     reason = ""
-    if not simulation:
-        reason = "Real EMI acquisition is not available yet. Turn on Hardware Simulation to use simulated data."
+    if not simulation and not boards:
+        reason = NO_BOARDS_REASON
     elif busy:
         reason = "A scan is running."
     return {
-        "available": simulation and not busy,
+        "available": not reason,
         "busy": busy,
         "simulation": simulation,
         "channels": channels,

@@ -119,9 +119,50 @@ def test_drifting_tone_moves_between_captures():
     assert abs(peaks[1] - peaks[0]) > 5_000
 
 
-def test_measure_refuses_without_simulation():
-    with pytest.raises(emi.EmiUnavailable):
-        emi.measure(simulation=False, boards=TWO_BOARDS, center_frequency_hz=CENTER_HZ)
+def _fake_acquire(calls):
+    def acquire(boards, channels, n_samples, adc_duration_us, averages):
+        calls.append((boards, channels, n_samples, adc_duration_us, averages))
+        period = 1.6e-6
+        samples = emi.simulate_samples(channels, n_samples, period, averages, rng=np.random.default_rng(3))
+        return samples, period, 15.5e6
+
+    return acquire
+
+
+def test_measured_capture_uses_the_acquisition_backend():
+    calls = []
+    capture = emi.measure(
+        simulation=False, boards=TWO_BOARDS, center_frequency_hz=CENTER_HZ, acquire=_fake_acquire(calls)
+    )
+    assert capture["source"] == "measured"
+    # Sample period and centre frequency come from the hardware, not the request.
+    assert capture["sample_period_s"] == pytest.approx(1.6e-6)
+    assert capture["center_frequency_hz"] == pytest.approx(15.5e6)
+    assert [(t["board"], t["channel"]) for t in capture["traces"]] == [(0, "rx1"), (1, "rx0"), (1, "rx1")]
+    boards, channels, n_samples, adc_duration_us, averages = calls[0]
+    assert boards is TWO_BOARDS and (n_samples, adc_duration_us, averages) == (4096, 6400.0, 1)
+    assert (0, 0, "mri_reference") not in channels
+
+
+def test_measured_capture_needs_configured_boards():
+    with pytest.raises(emi.EmiUnavailable, match="MARCOS_BOARDS"):
+        emi.measure(simulation=False, boards=None, center_frequency_hz=CENTER_HZ, acquire=_fake_acquire([]))
+
+
+def test_acquisition_failure_is_reported_and_releases_the_boards():
+    def broken(*_args):
+        raise ConnectionError("MaRCoS dropped the connection")
+
+    with pytest.raises(emi.EmiUnavailable, match="dropped the connection"):
+        emi.measure(simulation=False, boards=TWO_BOARDS, center_frequency_hz=CENTER_HZ, acquire=broken)
+    assert not emi.hardware_lock.locked()
+
+
+def test_measure_refuses_while_the_boards_are_in_use():
+    with emi.hardware_lock:
+        with pytest.raises(emi.EmiBusy):
+            emi.measure(simulation=True, boards=TWO_BOARDS, center_frequency_hz=CENTER_HZ)
+    assert emi.measure(simulation=True, boards=TWO_BOARDS, center_frequency_hz=CENTER_HZ)["traces"]
 
 
 def test_status_reports_busy_and_channels():
@@ -131,4 +172,6 @@ def test_status_reports_busy_and_channels():
     busy = emi.status(simulation=True, boards=TWO_BOARDS, busy=True)
     assert busy["available"] is False and "scan" in busy["reason"].lower()
     hardware = emi.status(simulation=False, boards=TWO_BOARDS, busy=False)
-    assert hardware["available"] is False and hardware["reason"]
+    assert hardware["available"] is True and hardware["reason"] == ""
+    unconfigured = emi.status(simulation=False, boards=None, busy=False)
+    assert unconfigured["available"] is False and "MARCOS_BOARDS" in unconfigured["reason"]

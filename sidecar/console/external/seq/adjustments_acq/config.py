@@ -32,7 +32,13 @@ DBG_FA_REF = 180
 #     1: dict(ip="SECOND_BOARD_IP", port=11111)
 # Secondary receivers default to (0, 1); use rx_channels=(1,) for RX1 only.
 # This is a Python setting; it is not read from config_acq.json or the GUI.
-MARCOS_BOARDS = None
+
+# MARCOS_BOARDS = None
+MARCOS_BOARDS = {
+    0: dict(ip="169.254.44.172", port=11111, rx_channels=(0, 1)),
+    1: dict(ip="169.254.93.61", port=11111),
+}
+
 # Trigger delay and length (microseconds), matching the MultiExperiment example.
 MARCOS_TRIGGER = (10, 20000)
 
