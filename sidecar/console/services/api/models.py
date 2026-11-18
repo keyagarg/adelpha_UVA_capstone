@@ -160,6 +160,16 @@ class EmiCapture(BaseModel):
     traces: List[EmiTrace]
 
 
+class EmiSaveRequest(BaseModel):
+    capture_id: str
+
+
+class EmiSaveResponse(BaseModel):
+    capture_id: str
+    folder: str
+    files: List[str]
+
+
 class EmiStatus(BaseModel):
     available: bool
     busy: bool

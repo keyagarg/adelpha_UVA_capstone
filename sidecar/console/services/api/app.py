@@ -32,6 +32,8 @@ from services.api.models import (
     DevicePingResponse,
     EmiCapture,
     EmiMeasureRequest,
+    EmiSaveRequest,
+    EmiSaveResponse,
     EmiStatus,
     EventRespondRequest,
     ExamResponse,
@@ -510,6 +512,20 @@ def emi_measure(body: EmiMeasureRequest = Body(default_factory=EmiMeasureRequest
         )
     except emi.EmiUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+@app.post("/emi/save", response_model=EmiSaveResponse)
+def emi_save(body: EmiSaveRequest):
+    """Write the latest EMI capture to the console data folder as .npy files."""
+    from common.constants import mri4all_paths
+    from services.api import emi
+
+    try:
+        return emi.save_latest(body.capture_id, Path(mri4all_paths.DATA) / "emi")
+    except emi.EmiUnavailable as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(500, f"Could not write the capture: {exc}") from exc
 
 
 @app.get("/about")

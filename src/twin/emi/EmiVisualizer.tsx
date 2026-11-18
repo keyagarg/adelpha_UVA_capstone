@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import { Activity, Play, Square } from "lucide-react";
+import { Activity, Play, Save, Square } from "lucide-react";
 
 import { lightThemePalette, useConsoleTheme } from "../consoleTheme";
 import type { EmiCapture, EmiTrace, PlotAxes } from "../mri/api";
@@ -84,6 +84,9 @@ export function EmiVisualizer({ active = true }: { active?: boolean }) {
   const stop = useEmiStore((s) => s.stop);
   const setIncludeReference = useEmiStore((s) => s.setIncludeReference);
   const toggleTrace = useEmiStore((s) => s.toggleTrace);
+  const saving = useEmiStore((s) => s.saving);
+  const savedFolder = useEmiStore((s) => s.savedFolder);
+  const save = useEmiStore((s) => s.save);
 
   // Check availability on open; never leave the boards acquiring unwatched.
   useEffect(() => {
@@ -145,6 +148,16 @@ export function EmiVisualizer({ active = true }: { active?: boolean }) {
             <Activity size={15} strokeWidth={1.75} aria-hidden />
             {measuring ? "Measuring…" : "Measure once"}
           </button>
+          <button
+            type="button"
+            className="emi-btn"
+            onClick={() => void save()}
+            disabled={!capture || saving || running || measuring || savedFolder !== null}
+            title={running ? "Stop the run to save the capture on screen" : undefined}
+          >
+            <Save size={15} strokeWidth={1.75} aria-hidden />
+            {saving ? "Saving…" : savedFolder !== null ? "Saved" : "Save"}
+          </button>
           {running ? (
             <button type="button" className="emi-btn emi-btn-primary" onClick={stop}>
               <Square size={14} strokeWidth={1.75} aria-hidden />
@@ -167,6 +180,12 @@ export function EmiVisualizer({ active = true }: { active?: boolean }) {
       {notice ? (
         <p className="emi-view-notice" role="alert">
           {notice}
+        </p>
+      ) : null}
+
+      {savedFolder !== null ? (
+        <p className="emi-view-saved" role="status">
+          Saved to <code>{savedFolder}</code>
         </p>
       ) : null}
 

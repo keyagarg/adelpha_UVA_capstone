@@ -1,9 +1,9 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
-import { fetchEmiStatus, measureEmi, type EmiCapture } from "../mri/api";
+import { fetchEmiStatus, measureEmi, saveEmiCapture, type EmiCapture } from "../mri/api";
 import { useEmiStore } from "./emiStore";
 
-vi.mock("../mri/api", () => ({ fetchEmiStatus: vi.fn(), measureEmi: vi.fn() }));
+vi.mock("../mri/api", () => ({ fetchEmiStatus: vi.fn(), measureEmi: vi.fn(), saveEmiCapture: vi.fn() }));
 
 function captureFixture(peak = 0.004, id = "emi-1"): EmiCapture {
   return {
@@ -92,6 +92,28 @@ it("ends the run when a capture fails", async () => {
   await vi.waitFor(() => expect(useEmiStore.getState().running).toBe(false));
   expect(useEmiStore.getState().error).toBe("A scan is running.");
   expect(measureEmi).toHaveBeenCalledTimes(1);
+});
+
+it("saves the capture on screen and forgets the folder at the next capture", async () => {
+  vi.mocked(measureEmi).mockResolvedValue(captureFixture());
+  vi.mocked(saveEmiCapture).mockResolvedValue({ capture_id: "emi-1", folder: "/data/emi/emi-1", files: [] });
+  await useEmiStore.getState().save();
+  expect(saveEmiCapture).not.toHaveBeenCalled();
+  await useEmiStore.getState().measureOnce();
+  await useEmiStore.getState().save();
+  expect(saveEmiCapture).toHaveBeenCalledWith("emi-1");
+  expect(useEmiStore.getState().savedFolder).toBe("/data/emi/emi-1");
+  await useEmiStore.getState().measureOnce();
+  expect(useEmiStore.getState().savedFolder).toBeNull();
+});
+
+it("reports a failed save", async () => {
+  vi.mocked(measureEmi).mockResolvedValue(captureFixture());
+  vi.mocked(saveEmiCapture).mockRejectedValue(new Error("That capture is no longer held in memory."));
+  await useEmiStore.getState().measureOnce();
+  await useEmiStore.getState().save();
+  expect(useEmiStore.getState().error).toBe("That capture is no longer held in memory.");
+  expect(useEmiStore.getState().saving).toBe(false);
 });
 
 it("toggles a trace's visibility", () => {

@@ -5,9 +5,6 @@ same time. Board 0 RX0 carries the MRI signal, so the EMI tool listens on the
 other receivers and only adds board 0 RX0 when the caller asks for it as a
 reference trace.
 
-The generator below produces time samples that go through the same FFT and 
-payload code a real MaRCoS burst will use, so the measured path only has to 
-replace ``simulate_samples``.
 
 This module depends on numpy alone. Reading the scanner configuration and the
 HTTP layer stay in ``app.py``.
@@ -15,15 +12,17 @@ HTTP layer stay in ``app.py``.
 
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 # board id -> receive channels the EMI tool listens on.
 EMI_RX_CHANNELS: Dict[int, Tuple[int, ...]] = {0: (1,), 1: (0, 1)}
-# Board 0 RX0 is generally the MRI receive channel; shown only as an optional reference.
+# Board 0 RX0 is the MRI receive channel; shown only as an optional reference.
 MRI_REFERENCE_CHANNEL: Tuple[int, int] = (0, 0)
 
 ROLE_EMI = "emi"
@@ -249,6 +248,41 @@ def measure(
         )
         _latest = {"capture": capture, "samples": samples}
     return capture
+
+
+def save_latest(capture_id: str, emi_dir) -> dict:
+    """Write the latest capture under ``emi_dir/<capture_id>/``.
+
+    Raw complex samples go to ``rawdata/board<b>_rx<c>.npy``, one file per
+    channel, shaped ``(averages, n_samples)``. ``capture.json`` holds the
+    metadata and per-channel summary, without the plotted arrays.
+    """
+    with _lock:
+        latest = _latest
+    if latest is None or latest["capture"]["capture_id"] != capture_id:
+        raise EmiUnavailable("That capture is no longer held in memory. Measure again, then save.")
+    capture = latest["capture"]
+    folder = Path(emi_dir) / capture_id
+    raw_dir = folder / "rawdata"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    files = []
+    traces = []
+    for trace in capture["traces"]:
+        board, channel = trace["board"], trace["channel"]
+        relative = f"rawdata/board{board}_{channel}.npy"
+        np.save(folder / relative, latest["samples"][(board, int(channel[2:]))])
+        files.append(relative)
+        summary = {key: value for key, value in trace.items() if key not in ("magnitude", "time_magnitude")}
+        summary["file"] = relative
+        traces.append(summary)
+
+    metadata = {key: value for key, value in capture.items() if key not in ("frequency_hz", "traces")}
+    metadata["sample_layout"] = "complex, shape (averages, n_samples)"
+    metadata["traces"] = traces
+    (folder / "capture.json").write_text(json.dumps(metadata, indent=2))
+    files.append("capture.json")
+    return {"capture_id": capture_id, "folder": str(folder), "files": files}
 
 
 def status(*, simulation: bool, boards: Optional[dict], busy: bool) -> dict:

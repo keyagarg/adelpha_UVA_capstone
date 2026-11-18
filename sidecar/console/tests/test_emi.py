@@ -77,6 +77,36 @@ def test_measure_keeps_raw_samples_for_saving():
     assert capture["traces"][0]["role"] == "mri_reference"
 
 
+def test_save_writes_raw_samples_and_metadata(tmp_path):
+    import json
+
+    capture = emi.measure(simulation=True, boards=TWO_BOARDS, center_frequency_hz=CENTER_HZ, averages=2)
+    saved = emi.save_latest(capture["capture_id"], tmp_path)
+    folder = tmp_path / capture["capture_id"]
+    assert saved["folder"] == str(folder)
+    assert saved["files"] == [
+        "rawdata/board0_rx1.npy",
+        "rawdata/board1_rx0.npy",
+        "rawdata/board1_rx1.npy",
+        "capture.json",
+    ]
+    raw = np.load(folder / "rawdata" / "board1_rx0.npy")
+    assert raw.shape == (2, 4096) and np.iscomplexobj(raw)
+    assert np.array_equal(raw, emi.latest_capture()["samples"][(1, 0)])
+    metadata = json.loads((folder / "capture.json").read_text())
+    assert metadata["source"] == "simulated" and metadata["averages"] == 2
+    assert "frequency_hz" not in metadata
+    assert metadata["traces"][0]["file"] == "rawdata/board0_rx1.npy"
+    assert "magnitude" not in metadata["traces"][0]
+
+
+def test_save_refuses_a_capture_that_is_no_longer_held(tmp_path):
+    emi.measure(simulation=True, boards=TWO_BOARDS, center_frequency_hz=CENTER_HZ)
+    with pytest.raises(emi.EmiUnavailable):
+        emi.save_latest("emi-something-else", tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_drifting_tone_moves_between_captures():
     channels = emi.emi_channels(TWO_BOARDS)
     period = 6400e-6 / 4096

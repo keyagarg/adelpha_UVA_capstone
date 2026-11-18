@@ -127,6 +127,18 @@ html[data-console-theme="mri4all"] .emi-btn-primary {
   line-height: 1.5;
 }
 
+.emi-view-saved {
+  margin: 0;
+  font-size: 12px;
+  color: var(--m4-muted);
+}
+
+.emi-view-saved code {
+  font-family: var(--font-mono);
+  color: var(--m4-text);
+  overflow-wrap: anywhere;
+}
+
 .emi-view-plot {
   position: relative;
   flex: 1;

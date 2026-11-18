@@ -844,6 +844,21 @@ export async function measureEmi(options: EmiMeasureOptions = {}): Promise<EmiCa
   });
 }
 
+export type EmiSaveResult = {
+  capture_id: string;
+  folder: string;
+  files: string[];
+};
+
+/** Write the capture the server still holds to the console data folder. */
+export async function saveEmiCapture(capture_id: string): Promise<EmiSaveResult> {
+  return mriFetch("/emi/save", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ capture_id }),
+  });
+}
+
 export type StudyPreview = {
   kind: "dicom" | "plot" | "empty";
   slices: number;

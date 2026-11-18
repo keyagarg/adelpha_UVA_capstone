@@ -1,6 +1,13 @@
 import { create } from "zustand";
 
-import { fetchEmiStatus, measureEmi, type EmiCapture, type EmiStatus, type EmiTrace } from "../mri/api";
+import {
+  fetchEmiStatus,
+  measureEmi,
+  saveEmiCapture,
+  type EmiCapture,
+  type EmiStatus,
+  type EmiTrace,
+} from "../mri/api";
 
 /** Pause between captures in Run mode, so the plot stays readable and the API is not flooded. */
 export const RUN_INTERVAL_MS = 250;
@@ -28,10 +35,14 @@ type EmiState = {
   hidden: Record<string, boolean>;
   /** Largest magnitude seen per trace during the current run; keeps the y-axis steady. */
   peaks: Record<string, number>;
+  saving: boolean;
+  /** Folder the capture on screen was saved to; cleared by the next capture. */
+  savedFolder: string | null;
   refreshStatus: () => Promise<void>;
   measureOnce: () => Promise<void>;
   start: () => void;
   stop: () => void;
+  save: () => Promise<void>;
   setIncludeReference: (value: boolean) => void;
   toggleTrace: (key: string) => void;
   reset: () => void;
@@ -58,6 +69,8 @@ export const useEmiStore = create<EmiState>((set, get) => ({
   includeReference: false,
   hidden: {},
   peaks: {},
+  saving: false,
+  savedFolder: null,
 
   refreshStatus: async () => {
     try {
@@ -72,7 +85,7 @@ export const useEmiStore = create<EmiState>((set, get) => ({
     set({ measuring: true, error: null });
     try {
       const capture = await measureEmi({ include_reference: get().includeReference });
-      set({ capture, peaks: tracePeaks(capture, null) });
+      set({ capture, peaks: tracePeaks(capture, null), savedFolder: null });
     } catch (err) {
       set({ error: errorMessage(err) });
       void get().refreshStatus();
@@ -90,7 +103,7 @@ export const useEmiStore = create<EmiState>((set, get) => ({
         try {
           const capture = await measureEmi({ include_reference: get().includeReference });
           if (token !== runToken) return;
-          set({ capture, peaks: tracePeaks(capture, get().peaks) });
+          set({ capture, peaks: tracePeaks(capture, get().peaks), savedFolder: null });
         } catch (err) {
           if (token !== runToken) return;
           // A failed capture ends the run: retrying against a busy scanner helps nobody.
@@ -109,6 +122,21 @@ export const useEmiStore = create<EmiState>((set, get) => ({
     if (get().running) set({ running: false });
   },
 
+  save: async () => {
+    const capture = get().capture;
+    // The server keeps only its latest capture, so a run must be stopped first.
+    if (!capture || get().saving || get().running || get().measuring) return;
+    set({ saving: true, error: null });
+    try {
+      const saved = await saveEmiCapture(capture.capture_id);
+      set({ savedFolder: saved.folder });
+    } catch (err) {
+      set({ error: errorMessage(err) });
+    } finally {
+      set({ saving: false });
+    }
+  },
+
   setIncludeReference: (value) => set({ includeReference: value }),
 
   toggleTrace: (key) => set((state) => ({ hidden: { ...state.hidden, [key]: !state.hidden[key] } })),
@@ -124,6 +152,8 @@ export const useEmiStore = create<EmiState>((set, get) => ({
       includeReference: false,
       hidden: {},
       peaks: {},
+      saving: false,
+      savedFolder: null,
     });
   },
 }));
