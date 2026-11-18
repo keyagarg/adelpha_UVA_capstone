@@ -62,12 +62,12 @@ class Configuration(BaseModel):
             f.write(self.model_dump_json(indent=4))
 
     def update(self, data: Dict):
-        update = self.model_dump()
-        update.update(data)
-        for k, v in (
-            self.model_validate(update).model_dump(exclude_defaults=True).items()
-        ):
-            setattr(self, k, v)
+        # Apply every submitted field, including one set back to its default
+        # (e.g. hardware_simulation "False"). Skipping defaults made that impossible.
+        merged = self.model_validate({**self.model_dump(), **data})
+        for key in data:
+            if key in type(self).model_fields:
+                setattr(self, key, getattr(merged, key))
         return self
 
     def is_hardware_simulation(self):
