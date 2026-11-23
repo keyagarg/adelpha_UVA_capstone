@@ -32,7 +32,6 @@ Exit codes: 0 everything matched, 1 selection mismatch, 2 trigger or connection 
 from __future__ import annotations
 
 import argparse
-import atexit
 import contextlib
 import io
 import os
@@ -46,7 +45,7 @@ EXPECTED_ONSET_US = 50.0  # loopback pulse starts this long after every window o
 PULSE_US = 20.0
 TOLERANCE_SAMPLES = 2
 
-np = msgpack = cfg = scripts = marcos_cfg = None  # filled in by import_console()
+np = msgpack = cfg = scripts = marcos_cfg = mc = None  # filled in by import_console()
 normalize_rx_channels = construct_packet = ITRIGFOREVER = None
 
 
@@ -62,21 +61,27 @@ def resolve_base(cli_value):
 
 
 def import_console():
-    global np, msgpack, cfg, scripts, marcos_cfg, normalize_rx_channels, construct_packet, ITRIGFOREVER
+    global np, msgpack, cfg, scripts, marcos_cfg, mc, normalize_rx_channels, construct_packet, ITRIGFOREVER
     if str(CONSOLE) not in sys.path:
         sys.path.insert(0, str(CONSOLE))
+    # Every module that opens the acquisition IPC endpoint registers an exit handler that
+    # deletes its pipe file. Turn that off for this process before anything opens one, so
+    # the test can never delete the pipe of a console that is running.
+    from common.ipc import Communicator
+    Communicator.cleanup = lambda self: None
+    # Load the sequence registry first, as the console does. It imports every sequence, and
+    # each sequence imports config.py; importing config.py first makes that circular.
+    import sequences  # noqa: F401
     import numpy as np  # noqa: F811
     import msgpack  # noqa: F811
     import external.seq.adjustments_acq.config as cfg  # noqa: F811
     import external.seq.adjustments_acq.scripts as scripts  # noqa: F811
-    # scripts.py opens the acquisition IPC endpoint on import and deletes its pipe file at
-    # exit; keep that file in place in case the console is running.
-    atexit.unregister(scripts.ipc_comm.cleanup)
     from external.flocra_pulseq.interpreter_pp import normalize_rx_channels  # noqa: F811
     from external.marcos_client import local_config as marcos_cfg  # noqa: F811
     from external.marcos_client.marmachine import ITRIGFOREVER  # noqa: F811
     from external.marcos_client.server_comms import construct_packet  # noqa: F811
-    globals().update(np=np, msgpack=msgpack, cfg=cfg, scripts=scripts, marcos_cfg=marcos_cfg,
+    import external.marcos_client.marcompile as mc  # noqa: F811
+    globals().update(np=np, msgpack=msgpack, cfg=cfg, scripts=scripts, marcos_cfg=marcos_cfg, mc=mc,
                      normalize_rx_channels=normalize_rx_channels,
                      construct_packet=construct_packet, ITRIGFOREVER=ITRIGFOREVER)
 
@@ -235,6 +240,8 @@ def board_options(board_id, settings, args):
     options.setdefault("lo_freq", args.lo)
     options["rx_t"] = args.rx_t
     options["init_gpa"] = False  # no gradients in this test
+    if args.cic_shift:
+        options["set_cic_shift"] = True
     options.setdefault("grad_max_update_rate", 0.0625)
     options.setdefault("halt_and_reset", True)
     return options
@@ -402,14 +409,15 @@ def run_once(boards, args, trig, align, attempt):
                     "did not wait for board 0's trigger. Its trigger input is probably floating or "
                     "picking up noise (check the wire and ground). Its data is NOT synchronized.")
             else:
-                print(f"Trigger OK: board {b} waited for board 0 and finished "
-                      f"{(t['end'] - c_end) * 1000:+.1f} ms relative to board 0.")
+                print(f"Trigger OK: board {b} waited for board 0's trigger and finished "
+                      f"{(t['end'] - c_start) * 1000:.1f} ms after board 0 started.")
         if not followers:
             print("Only board 0 selected: the trigger is not exercised in this run.")
 
         # ---- what came back
         print(f"\n{'board':>5} {'ch':>3} {'selected':>8} {'programmed':>10} {'expected':>8} "
-              f"{'received':>8} {'mean |x|':>10}  result")
+              f"{'received':>8} {'mean |x|':>10} {'in LSB':>8}  result")
+        levels_lsb = []
         expected_by_count = {p["samples"]: k for k, p in plan.items()}
         for (b, ch), p in plan.items():
             data = np.asarray((rxd.get(b) or {}).get(f"rx{ch}", []))
@@ -432,10 +440,29 @@ def run_once(boards, args, trig, align, attempt):
                     other = expected_by_count.get(n)
                     hint = f" (that is the window of board {other[0]} RX{other[1]})" if other else ""
                     problems.append(f"board {b} RX{ch} was not selected but returned {n} samples{hint}")
-            level = f"{float(np.mean(np.abs(data))):.3g}" if n else "-"
+            level, in_lsb = "-", "-"
+            if n:
+                mean_abs = float(np.mean(np.abs(data)))
+                # Experiment.run scales both channels by the RX0 CIC factor / 2**24
+                lsb = float(multi.exps[b]._rx0_cic_factor) / (1 << 24)
+                levels_lsb.append(mean_abs / lsb)
+                level, in_lsb = f"{mean_abs:.3g}", f"{mean_abs / lsb:.1f}"
             print(f"{b:>5} {ch:>3} {('yes' if p['selected'] else 'no'):>8} "
                   f"{('yes' if p['programmed'] else 'no'):>10} {p['samples'] if p['selected'] else 0:>8} "
-                  f"{n:>8} {level:>10}  {result}")
+                  f"{n:>8} {level:>10} {in_lsb:>8}  {result}")
+        if levels_lsb and max(levels_lsb) < 3:
+            shift_on = all(options[b].get("set_cic_shift", False) for b in boards)
+            rate = int(round(rx_t * marcos_cfg.fpga_clk_freq_MHz))
+            bits = int(mc.CIC_STAGES * np.log2(mc.CIC_SLOWEST_RATE_NEAREST_POW2 / rate))
+            print("\nNOTE: every input reads within about 1 LSB of zero (the digital floor). That does "
+                  "not affect the selection and trigger checks, but the inputs show no measurable "
+                  "signal or noise.")
+            if shift_on:
+                print("  set_cic_shift is already on, so check the RF connections, or run --loopback.")
+            else:
+                print(f"  At this sample rate the CIC needs a {bits}-bit gain shift that is only "
+                      "programmed with set_cic_shift=True, and it is off. Rerun with --cic-shift; if the "
+                      "level rises well above 1 LSB, add set_cic_shift=True to both MARCOS_BOARDS entries.")
 
         # ---- loopback timing across boards
         if args.loopback:
@@ -516,6 +543,8 @@ def parse_args(argv):
     p.add_argument("--loopback", action="store_true", help="send a TX0 pulse from board 0 (see above)")
     p.add_argument("--tx-amp", type=float, default=0.05, help="loopback pulse amplitude, 0-1 (default 0.05)")
     p.add_argument("--lo", type=float, help="LO frequency in MHz (default: the configured Larmor frequency)")
+    p.add_argument("--cic-shift", action="store_true",
+                   help="program the CIC gain shift on every board (set_cic_shift=True, as mutliboard.py does)")
     p.add_argument("--rx-t", type=float, default=3.125, help="sample period in us (default 3.125)")
     p.add_argument("--samples", type=int, default=200,
                    help="window length unit; stream k gets k x this many samples (default 200)")
@@ -556,7 +585,8 @@ def main(argv=None):
     for b, s in boards.items():
         role = "controller (sends trigger)" if b == 0 else "follower (waits for trigger)"
         chans = ", ".join(f"RX{c}" for c in s["rx_channels"]) or "no receive"
-        print(f"  board {b}: {s['ip']}:{s.get('port', 11111)}  {role}  {chans}")
+        shift = "on" if board_options(b, s, args).get("set_cic_shift", False) else "off"
+        print(f"  board {b}: {s['ip']}:{s.get('port', 11111)}  {role}  {chans}  (CIC shift {shift})")
     if args.loopback:
         print("  Loopback: board 0 will transmit a short TX0 pulse. TX0 must go to the RX inputs "
               "through an attenuator/splitter, not to the RF amplifier or coil.")
