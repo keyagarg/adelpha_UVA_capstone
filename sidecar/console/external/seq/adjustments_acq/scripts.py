@@ -6,6 +6,8 @@
 
 import sys
 import os
+import socket
+import threading
 from pathlib import Path
 from importlib import import_module
 import numpy as np
@@ -48,6 +50,93 @@ def load_multi_experiment(boards):
             else:
                 sys.modules[name] = module
     return cls
+
+
+def _call_with_deadline(fn, timeout_s, timeout_message):
+    """Run fn() in a worker thread and raise TimeoutError if it is still running after timeout_s.
+
+    A blocked MaRCoS socket cannot be interrupted from Python, so the worker is a daemon
+    thread that is abandoned on timeout; closing the board sockets releases it.
+    None waits forever, like a direct call.
+    """
+    if timeout_s is None:
+        return fn()
+    outcome = {}
+
+    def worker():
+        try:
+            outcome["value"] = fn()
+        except BaseException as exc:  # re-raised in the caller's thread
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=worker, name="marcos-multiboard", daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive():
+        raise TimeoutError(timeout_message)
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
+def _close_board_connections(expt):
+    """Close the socket of every board in a MultiExperiment.
+
+    shutdown() also wakes a thread blocked in recv() on that socket. Sockets the caller
+    supplied through prev_socket are left alone.
+    """
+    for board in getattr(expt, "exps", {}).values():
+        sock = getattr(board, "_s", None)
+        if sock is None or not getattr(board, "_close_socket", True):
+            continue
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+        board._s = None
+
+
+def _align_follower_events(events, shift_us, board_id):
+    """Move a follower's events shift_us earlier.
+
+    A follower starts its program when board 0's trigger arrives and then waits its own
+    initial_wait before its first event. Moving its events earlier by trig_delay plus that
+    wait puts its receive windows at the same moments as board 0's, to within the
+    trigger's hardware latency.
+    """
+    aligned = {}
+    for key, (times, values) in events.items():
+        times = np.asarray(times, dtype=float) - shift_us
+        values = np.asarray(values)
+        early = times < 0
+        if np.any(values[early] != 0):
+            raise ValueError(
+                f"Board {board_id}: {key} switches on less than {shift_us:.1f} us after the "
+                "sequence starts, so it cannot be moved earlier to line up with board 0. "
+                "Add delay before the first ADC event or set MARCOS_ALIGN_FOLLOWERS = False."
+            )
+        if np.any(early):
+            keep = ~early
+            times, values = times[keep], values[keep]
+            if not np.any(times == 0):
+                times = np.concatenate(([0.0], times))
+                values = np.concatenate(([0], values))
+        aligned[key] = (times, values)
+    return aligned
+
+
+def _sequence_length_s(board_instructions):
+    """Latest event time across all boards, in seconds."""
+    latest = 0.0
+    for events in board_instructions.values():
+        for times, _ in events.values():
+            if len(times):
+                latest = max(latest, float(np.max(times)))
+    return latest / 1e6
 
 
 # TODO: Remove references to cfg class from here
@@ -237,6 +326,7 @@ def run_pulseq(
                     for board_id, channels in selected.items()}, psi._rx_t
         return np.array([], dtype=np.complex128), psi._rx_t
 
+    owns_expt = expt is None
     if expt is None:
         from external.marcos_client import local_config as marcos_cfg
         from sequences.common.util import reading_json_parameter
@@ -275,7 +365,15 @@ def run_pulseq(
                     options.setdefault("grad_max_update_rate", 0.0625)
                     options.setdefault("halt_and_reset", True)
                 board_settings[0].setdefault("gpa_fhdo_offset_time", psi._grad_t / 3)
-                expt = MultiExperiment(boards=board_settings)
+                connect_timeout = getattr(cfg, "MARCOS_CONNECT_TIMEOUT_S", None)
+                expt = _call_with_deadline(
+                    lambda: MultiExperiment(boards=board_settings),
+                    connect_timeout,
+                    f"Boards {sorted(board_settings)} did not finish connecting within "
+                    f"{connect_timeout} s. A marcos_server still stuck in an earlier scan "
+                    "accepts the connection but never answers. Restart marcos_server on "
+                    "each board, then retry.",
+                )
         except ConnectionError:
             raise
         except OSError as exc:
@@ -312,6 +410,18 @@ def run_pulseq(
     #     "grad_vz": psi._flo_dict['grad_vz'],
     #     }
 
+    if boards is not None and getattr(cfg, "MARCOS_ALIGN_FOLLOWERS", False):
+        trig_delay = cfg.MARCOS_TRIGGER[0]
+        for board_id in board_instructions:
+            if board_id == 0:
+                continue
+            shift = trig_delay + expt.exps[board_id]._initial_wait
+            board_instructions[board_id] = _align_follower_events(
+                board_instructions[board_id], shift, board_id
+            )
+            log.info("Board %s receive events moved %.3f us earlier to line up with board 0",
+                     board_id, shift)
+
     expt.add_flodict(instructions if boards is None else board_instructions)
 
 
@@ -331,7 +441,30 @@ def run_pulseq(
     if boards is None:
         rxd, msgs = expt.run()
     else:
-        rxd, msgs = expt.run(*cfg.MARCOS_TRIGGER)
+        run_timeout = getattr(cfg, "MARCOS_RUN_TIMEOUT_S", None)
+        message = ""
+        if run_timeout is not None:
+            trig_delay, trig_length = cfg.MARCOS_TRIGGER
+            run_timeout += _sequence_length_s(board_instructions) + (trig_delay + trig_length) / 1e6
+            followers = ", ".join(
+                f"{board_id} ({board_settings[board_id]['ip']})"
+                for board_id in board_settings if board_id != 0
+            )
+            message = (
+                f"The multi-board run did not finish within {run_timeout:.1f} s. Most likely "
+                f"follower board(s) {followers or 'none'} never saw board 0's trigger and are "
+                "still waiting. Check the trigger wire, then restart marcos_server on those "
+                "boards before the next scan."
+            )
+        try:
+            rxd, msgs = _call_with_deadline(
+                lambda: expt.run(*cfg.MARCOS_TRIGGER), run_timeout, message
+            )
+        except TimeoutError:
+            _close_board_connections(expt)
+            raise
+        if owns_expt:
+            _close_board_connections(expt)
     if boards is not None:
         rxd = {board_id: {f"rx{ch}": rxd[board_id][f"rx{ch}"] for ch in channels}
                for board_id, channels in selected.items()}
