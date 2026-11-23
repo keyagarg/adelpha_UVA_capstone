@@ -119,3 +119,60 @@ class ScanPsdResponse(BaseModel):
     file_path: str = "other/psd.plot"
     result_type: str = "plot"
     result_name: str = "PSD"
+
+
+class EmiMeasureRequest(BaseModel):
+    """Settings for one EMI noise burst. Every field is optional."""
+
+    n_samples: int = Field(default=4096, ge=64, le=65536)
+    adc_duration_us: float = Field(default=6400.0, gt=0, le=1_000_000)
+    averages: int = Field(default=1, ge=1, le=64)
+    # Also record board 0 RX0 (the MRI channel) as a reference trace.
+    include_reference: bool = False
+
+
+class EmiChannel(BaseModel):
+    board: int
+    channel: str
+    label: str
+    role: str
+
+
+class EmiTrace(EmiChannel):
+    magnitude: List[float]
+    time_magnitude: List[float]
+    rms: float
+    peak_frequency_hz: float
+    peak_magnitude: float
+
+
+class EmiCapture(BaseModel):
+    capture_id: str
+    timestamp: str
+    source: str
+    center_frequency_hz: float
+    sample_period_s: float
+    bandwidth_hz: float
+    n_samples: int
+    averages: int
+    units: str
+    frequency_hz: List[float]
+    traces: List[EmiTrace]
+
+
+class EmiSaveRequest(BaseModel):
+    capture_id: str
+
+
+class EmiSaveResponse(BaseModel):
+    capture_id: str
+    folder: str
+    files: List[str]
+
+
+class EmiStatus(BaseModel):
+    available: bool
+    busy: bool
+    simulation: bool
+    channels: List[EmiChannel]
+    reason: str = ""

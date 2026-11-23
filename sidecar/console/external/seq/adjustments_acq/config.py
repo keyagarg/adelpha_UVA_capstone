@@ -25,35 +25,22 @@ SHIM_MC = configuration_data.shim_parameters.shim_mc
 DBG_FA_EXC = 90
 DBG_FA_REF = 180
 
-# Board selection for FID (other sequences ignore it). Set to None for the original
-# single-board RX0 path. This is a Python setting; it is not read from config_acq.json
-# or the GUI, so restart the console API after changing it.
-#   Board 0: SDRlab 122-16, the controller. Gets the TX and gradient events and drives
-#            the trigger output.
-#   Board 1: SDRlab 122-16 external-clock version, a follower. Receive only; it waits
-#            for board 0's trigger before starting its program.
-# Addresses match marcos_experiments/mutliboard.py. rx_channels picks RX0 and/or RX1
-# (board 0 defaults to (0,), followers to (0, 1)). Any other key, for example
-# set_cic_shift=True, is passed to that board's Experiment class.
+# Optional board selection for FID. None keeps the original single-board RX0 path.
+# To use both receivers on the primary:
+# MARCOS_BOARDS = {0: dict(ip="169.254.44.172", port=11111, rx_channels=(0, 1))}
+# To also use the secondary, add its actual address to that dictionary:
+#     1: dict(ip="SECOND_BOARD_IP", port=11111)
+# Secondary receivers default to (0, 1); use rx_channels=(1,) for RX1 only.
+# This is a Python setting; it is not read from config_acq.json or the GUI.
+
+# MARCOS_BOARDS = None
 MARCOS_BOARDS = {
     0: dict(ip="169.254.44.172", port=11111, rx_channels=(0, 1)),
-    1: dict(ip="169.254.93.61", port=11111, rx_channels=(0, 1)),
+    1: dict(ip="169.254.93.61", port=11111),
 }
+
 # Trigger delay and length (microseconds), matching the MultiExperiment example.
 MARCOS_TRIGGER = (10, 20000)
-# A follower starts its program when board 0's trigger arrives, then waits its own
-# initial_wait (17 us with the console's settings) before its first event, so its
-# samples lag board 0's by trig_delay + initial_wait. True moves follower receive
-# windows earlier by that amount so samples line up with board 0's (to within the
-# trigger's hardware latency). False keeps the raw timing.
-MARCOS_ALIGN_FOLLOWERS = True
-# Seconds allowed for connecting to every board. A marcos_server still stuck in an
-# earlier scan accepts the connection but never answers. None waits forever.
-MARCOS_CONNECT_TIMEOUT_S = 20
-# Seconds allowed beyond the sequence's own length (plus the trigger pulse) before a
-# multi-board run is abandoned, e.g. when a follower never sees the trigger.
-# None waits forever.
-MARCOS_RUN_TIMEOUT_S = 15
 
 
 def marcos_board_endpoints(boards):

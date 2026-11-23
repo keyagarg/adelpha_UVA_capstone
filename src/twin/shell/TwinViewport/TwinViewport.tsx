@@ -21,6 +21,9 @@ const TwinCanvas = lazy(() =>
 const CameraFeed = lazy(() =>
   import("../../CameraFeed").then((m) => ({ default: m.CameraFeed })),
 );
+const EmiVisualizer = lazy(() =>
+  import("../../emi/EmiVisualizer").then((m) => ({ default: m.EmiVisualizer })),
+);
 
 export function TwinViewport({
   waitingForSensors = false,
@@ -45,7 +48,7 @@ export function TwinViewport({
   sensorNotes?: string[];
   viewportTool: ViewportToolId;
   onViewportToolChange: (id: ViewportToolId) => void;
-  stageMode: "magnet" | "camera";
+  stageMode: "magnet" | "camera" | "emi";
   showDashboard: boolean;
   setShowDashboard: Dispatch<SetStateAction<boolean>>;
   expandedCard: DashboardCard | null;
@@ -61,14 +64,16 @@ export function TwinViewport({
   <section className="viewport">
     <div className="viewport-stage">
     <ViewportToolRail active={viewportTool} onActiveChange={onViewportToolChange} />
-    <button
-      type="button"
-      className="viewport-dashboard-btn"
-      onClick={() => setShowDashboard((v) => !v)}
-    >
-      {showDashboard ? "Hide live dashboard" : "Open live dashboard"}
-    </button>
-    {stageMode === "camera" ? null : (
+    {stageMode === "emi" ? null : (
+      <button
+        type="button"
+        className="viewport-dashboard-btn"
+        onClick={() => setShowDashboard((v) => !v)}
+      >
+        {showDashboard ? "Hide live dashboard" : "Open live dashboard"}
+      </button>
+    )}
+    {stageMode !== "magnet" ? null : (
       <>
         <ViewportContextMenu enabled />
         <div className="part-inspect-stack">
@@ -84,6 +89,10 @@ export function TwinViewport({
           onPoseUpdate={series.onCameraPoseUpdate}
           onPreviewStreamChange={setCameraPreviewStream}
         />
+      </Suspense>
+    ) : stageMode === "emi" ? (
+      <Suspense fallback={null}>
+        <EmiVisualizer active={workspace === "digital-twin"} />
       </Suspense>
     ) : (
       <ErrorBoundary
@@ -102,7 +111,7 @@ export function TwinViewport({
         </Suspense>
       </ErrorBoundary>
     )}
-    {showDashboard ? (
+    {showDashboard && stageMode !== "emi" ? (
       <LiveDashboard
         waitingForSensors={waitingForSensors}
         sensorMode={sensorMode}
