@@ -17,6 +17,12 @@ const TRACE_COLORS: Record<string, ModeColor> = {
   "0-rx1": { dark: "#3987e5", light: "#2a78d6" },
   "1-rx0": { dark: "#d95926", light: "#eb6834" },
   "1-rx1": { dark: "#199e70", light: "#1baf7a" },
+  // Receivers that can be marked EMI in Settings > Imaging Console > MaRCoS boards.
+  "0-rx0": { dark: "#a371f7", light: "#8250df" },
+  "2-rx0": { dark: "#e5609b", light: "#cf3f80" },
+  "2-rx1": { dark: "#2bb5c4", light: "#1a95a3" },
+  "3-rx0": { dark: "#d4a72c", light: "#a87d00" },
+  "3-rx1": { dark: "#e5534b", light: "#cf222e" },
 };
 /** The MRI reference channel and any unexpected channel stay neutral. */
 const NEUTRAL_COLOR: ModeColor = { dark: "#9ca3af", light: "#6b7280" };

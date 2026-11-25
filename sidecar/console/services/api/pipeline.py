@@ -171,6 +171,9 @@ def process_acquisition(scan_name: str) -> bool:
         from external.marcos_client import local_config as marcos_cfg
 
         apply_scanner_settings()
+        # Rebuild the board list from Settings so the preflight checks the boards
+        # this scan will use, including a Scanner IP changed since the last reload.
+        cfg.update()
         if not config.get_config().is_hardware_simulation():
             from services.ui.control import probe_scanner
             from services.ui.marcos_boot import ensure_marcos_server, fpga_device

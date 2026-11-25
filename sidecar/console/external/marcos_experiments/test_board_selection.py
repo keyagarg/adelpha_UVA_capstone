@@ -8,7 +8,7 @@ Close the Adelpha app first: marcos_server answers one client at a time.
 Run from sidecar/console with the console's Python environment active:
 
     python external/marcos_experiments/test_board_selection.py
-        boards and channels from MARCOS_BOARDS in config.py
+        boards and receivers marked MRI or EMI in Settings > Imaging Console > MaRCoS boards
     python external/marcos_experiments/test_board_selection.py --select 0:1 1:0,1
         board 0 RX1 only; board 1 RX0 and RX1 (boards not listed are left out)
     python external/marcos_experiments/test_board_selection.py --select 0: 1:0
@@ -106,7 +106,13 @@ def parse_select(items):
 
 
 def build_boards(args):
-    configured = {b: dict(s) for b, s in (cfg.MARCOS_BOARDS or {}).items()}
+    # Every board with an address in Settings (board 0 = Scanner IP), without receivers.
+    addresses = getattr(cfg, "MARCOS_BOARD_ADDRESSES", None)
+    if addresses is None:  # console without the board settings
+        addresses = {b: {k: v for k, v in s.items() if k != "rx_channels"}
+                     for b, s in (cfg.MARCOS_BOARDS or {}).items()}
+    configured = {b: dict(s) for b, s in addresses.items()}
+    roles = getattr(cfg, "MARCOS_RX_ROLES", None)
     for spec in args.ip:
         board, sep, address = spec.partition("=")
         host, _, port = address.partition(":")
@@ -117,17 +123,23 @@ def build_boards(args):
         entry["port"] = int(port) if port else entry.get("port", 11111)
     if args.select:
         selection = parse_select(args.select)
+    elif roles is not None:
+        # every receiver marked MRI or EMI; board 0 always, other boards when they have one
+        selection = {b: tuple(ch for ch in (0, 1) if (b, ch) in roles) for b in configured}
+        selection = {b: chs for b, chs in selection.items() if b == 0 or chs}
     else:
-        selection = {b: s.get("rx_channels", (0,) if b == 0 else (0, 1)) for b, s in configured.items()}
+        selection = {b: s.get("rx_channels", (0,) if b == 0 else (0, 1))
+                     for b, s in (cfg.MARCOS_BOARDS or {}).items()}
     if not selection:
-        raise SystemExit("No boards configured: set MARCOS_BOARDS in config.py or pass --ip and --select")
+        raise SystemExit("No boards configured: add them in Settings > Imaging Console > MaRCoS boards, "
+                         "or pass --ip and --select")
     if 0 not in selection:
         raise SystemExit("Board 0 must be included: it is the controller that sends the trigger. "
                          "Use '0:' to include it without receiving.")
     boards = {}
     for board_id in sorted(selection):
         if board_id not in configured or "ip" not in configured[board_id]:
-            raise SystemExit(f"Board {board_id} has no address. Add it to MARCOS_BOARDS in config.py "
+            raise SystemExit(f"Board {board_id} has no address. Add it in Settings > Imaging Console > MaRCoS boards "
                              f"or pass --ip {board_id}=ADDRESS")
         settings = dict(configured[board_id])
         try:
@@ -462,7 +474,8 @@ def run_once(boards, args, trig, align, attempt):
             else:
                 print(f"  At this sample rate the CIC needs a {bits}-bit gain shift that is only "
                       "programmed with set_cic_shift=True, and it is off. Rerun with --cic-shift; if the "
-                      "level rises well above 1 LSB, add set_cic_shift=True to both MARCOS_BOARDS entries.")
+                      "level rises well above 1 LSB, turn on CIC gain shift for each board in Settings > "
+                      "Imaging Console > MaRCoS boards.")
 
         # ---- loopback timing across boards
         if args.loopback:
@@ -531,7 +544,7 @@ def run_once(boards, args, trig, align, attempt):
 def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--select", nargs="+", metavar="BOARD:CHANNELS",
-                   help="boards and RX channels to use, e.g. 0:0,1 1:1 (default: MARCOS_BOARDS)")
+                   help="boards and RX channels to use, e.g. 0:0,1 1:1 (default: receivers marked MRI or EMI in Settings)")
     p.add_argument("--ip", nargs="+", default=[], metavar="BOARD=ADDRESS[:PORT]",
                    help="override or add a board address, e.g. 1=169.254.93.61")
     p.add_argument("--trigger", nargs=2, type=float, metavar=("DELAY_US", "LENGTH_US"),

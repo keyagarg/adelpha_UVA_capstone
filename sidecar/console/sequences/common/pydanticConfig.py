@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import List
+from pydantic import BaseModel, Field, model_validator
+from typing import List, Literal
 from pathlib import Path
 from common import runtime
 
@@ -22,6 +22,31 @@ class ShimParameters(BaseModel):
     shim_z: float = 0.0
     shim_mc: List[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
+### marcos_parameters.boards: one entry per Red Pitaya, set in Settings > Imaging Console.
+### The list index is the board id. Board 0 is the controller: it uses the Scanner IP and
+### the MaRCoS port, plays the RF pulse and gradients, and triggers the other boards.
+### Only FID records on more than one board; other sequences use board 0 alone.
+RxRole = Literal["off", "mri", "emi"]
+
+
+class BoardParameters(BaseModel):
+    ip: str = ""  # boards 1+; board 0 uses the Scanner IP
+    port: int = 11111  # boards 1+; board 0 uses marcos_parameters.port
+    # "mri": recorded by scans; "emi": recorded by the EMI tool; "off": not recorded
+    rx0: RxRole = "off"
+    rx1: RxRole = "off"
+    # Board 0 only: the TX outputs that play the RF pulse
+    tx0: bool = False
+    tx1: bool = False
+    # Program the receive filter's gain shift (marcos_client set_cic_shift)
+    set_cic_shift: bool = False
+
+
+def default_boards() -> List[BoardParameters]:
+    """The original console: one board, RX0 for scans, TX0 for the RF pulse."""
+    return [BoardParameters(rx0="mri", tx0=True)]
+
+
 ### marcos_parameters section
 class MarcosParameters(BaseModel):
     port: int = 11111
@@ -32,6 +57,17 @@ class MarcosParameters(BaseModel):
     # GPA-FHDO SPI setup on connect. Off by default: without a gradient board
     # attached, those first MaRCoS commands close the TCP socket (Broken pipe).
     initialize_gpa: bool = False
+    boards: List[BoardParameters] = Field(default_factory=default_boards)
+
+    @model_validator(mode="after")
+    def _board0_transmits(self):
+        # An empty list means the original single board, and board 0 always has a
+        # TX output: without one a scan would play no RF pulse.
+        if not self.boards:
+            self.boards = default_boards()
+        if not (self.boards[0].tx0 or self.boards[0].tx1):
+            self.boards[0].tx0 = True
+        return self
 
 ##############################################
 ### main definition of the configuration files

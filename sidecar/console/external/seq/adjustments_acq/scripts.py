@@ -129,6 +129,18 @@ def _align_follower_events(events, shift_us, board_id):
     return aligned
 
 
+def _route_tx(events, tx_channels):
+    """Play the RF pulse on board 0's selected TX outputs; Pulseq always gives it as tx0."""
+    tx_channels = tuple(tx_channels) or (0,)
+    if tx_channels == (0,) or "tx0" not in events:
+        return events
+    routed = {key: value for key, value in events.items() if key not in ("tx0", "tx1")}
+    times, values = events["tx0"]
+    for channel in tx_channels:
+        routed[f"tx{channel}"] = (np.array(times, copy=True), np.array(values, copy=True))
+    return routed
+
+
 def _sequence_length_s(board_instructions):
     """Latest event time across all boards, in seconds."""
     latest = 0.0
@@ -253,6 +265,16 @@ def run_pulseq(
             block_duration_raster=1e-6,
         )
 
+    # Single-board sequences record on board 0's first MRI receiver (RX0 by default).
+    single_rx = 0
+    if boards is None:
+        single_rx = getattr(cfg, "MARCOS_SINGLE_BOARD_RX", 0)
+        if single_rx is None:
+            raise ValueError(
+                "Board 0 has no receiver marked MRI. Sequences that record on one channel use "
+                "board 0: mark its RX0 or RX1 as MRI in Settings > Imaging Console > MaRCoS boards."
+            )
+
     psi = seq2flocra(
         center_freq=rf_center * 1e6,
         rf_amp_max=rf_max,
@@ -261,7 +283,7 @@ def run_pulseq(
         gx_max=gx_max,
         gy_max=gy_max,
         gz_max=gz_max,
-        rx_channels=(0, 1) if boards is not None else (0,),
+        rx_channels=(0, 1) if boards is not None else (single_rx,),
     )
     psi.load_seqfile(seq_file)
     psi.block_events_to_amps_times()
@@ -272,6 +294,8 @@ def run_pulseq(
         instructions = shim(instructions, (shim_x, shim_y, shim_z))
     except Exception as exc:
         log.warning("Could not apply shim offsets: %s", exc)
+
+    instructions = _route_tx(instructions, getattr(cfg, "MARCOS_TX_CHANNELS", (0,)))
 
     if boards is not None:
         endpoints = cfg.marcos_board_endpoints(boards)
@@ -305,10 +329,10 @@ def run_pulseq(
     if plot_instructions:
         plt.clf()
         _, axs = plt.subplots(3, 1, sharex="col", constrained_layout=True)
-        for key in ["tx0"]:
+        for key in ["tx0", "tx1"]:
             if key in instructions:
                 axs[0].step(instructions[key][0], abs(instructions[key][1]), where="post", label=key)
-        for key in (["rx0_en"] if boards is None else ["rx0_en", "rx1_en"]):
+        for key in ([f"rx{single_rx}_en"] if boards is None else ["rx0_en", "rx1_en"]):
             if key in instructions:
                 axs[1].step(instructions[key][0], instructions[key][1], where="post", label=key)
         for key in ["grad_vx", "grad_vy", "grad_vz", "grad_vz2"]:
@@ -339,13 +363,16 @@ def run_pulseq(
 
         if boards is None:
             log.info(
-                "Connecting to MaRCoS at %s:%s (init_gpa=%s)",
+                "Connecting to MaRCoS at %s:%s (init_gpa=%s, RX%s, TX%s)",
                 marcos_cfg.ip_address,
                 marcos_cfg.port,
                 init_gpa,
+                single_rx,
+                "+".join(str(ch) for ch in getattr(cfg, "MARCOS_TX_CHANNELS", (0,))),
             )
         try:
             if boards is None:
+                board0 = getattr(cfg, "MARCOS_BOARD_ADDRESSES", {}).get(0, {})
                 expt = ex.Experiment(
                     lo_freq=rf_center,
                     rx_t=psi._rx_t,
@@ -353,6 +380,7 @@ def run_pulseq(
                     gpa_fhdo_offset_time=psi._grad_t / 3,
                     grad_max_update_rate=0.0625,
                     halt_and_reset=True,
+                    set_cic_shift=bool(board0.get("set_cic_shift", False)),
                 )
             else:
                 MultiExperiment = load_multi_experiment(boards)
@@ -488,14 +516,14 @@ def run_pulseq(
         filename = Path(case_path) / mri4all_taskdata.RAWDATA / f"{raw_filename}.npy"
         if os.path.exists(filename):
             os.remove(filename)
-        np.save(filename, rxd["rx0"])
+        np.save(filename, rxd[f"rx{single_rx}"])
 
     # Optionally save rx output array as .mat file
     if save_mat and boards is None:
         filename = Path(case_path) / mri4all_taskdata.RAWDATA / f"{raw_filename}.mat"
         if os.path.exists(filename):
             os.remove(filename)
-        sio.savemat(filename, {"flocra_data": rxd["rx0"]})
+        sio.savemat(filename, {"flocra_data": rxd[f"rx{single_rx}"]})
 
     if boards is not None:
         for board_id, channels in rxd.items():
@@ -515,7 +543,7 @@ def run_pulseq(
 
 
     # Return rx output array and rx period
-    return rxd["rx0"] if boards is None else rxd, psi._rx_t
+    return rxd[f"rx{single_rx}"] if boards is None else rxd, psi._rx_t
 
 
 

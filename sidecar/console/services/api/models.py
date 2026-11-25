@@ -60,6 +60,13 @@ class SequenceInfo(BaseModel):
     parameter_schema: Dict[str, Any] = Field(default_factory=dict)
 
 
+class DevicePingRequest(BaseModel):
+    """Board to ping. An empty ``ip`` means the Scanner IP (board 0)."""
+
+    ip: str = ""
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
+
+
 class DevicePingResponse(BaseModel):
     ip: str
     ok: bool
@@ -127,7 +134,7 @@ class EmiMeasureRequest(BaseModel):
     n_samples: int = Field(default=4096, ge=64, le=65536)
     adc_duration_us: float = Field(default=6400.0, gt=0, le=1_000_000)
     averages: int = Field(default=1, ge=1, le=64)
-    # Also record board 0 RX0 (the MRI channel) as a reference trace.
+    # Also record the receivers marked MRI (board 0 RX0 by default) as reference traces.
     include_reference: bool = False
 
 

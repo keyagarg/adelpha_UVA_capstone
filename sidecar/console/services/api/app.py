@@ -29,6 +29,7 @@ from common.types import PatientInformation
 from services.api import events
 from services.api.models import (
     DeviceMarcosStartResponse,
+    DevicePingRequest,
     DevicePingResponse,
     EmiCapture,
     EmiMeasureRequest,
@@ -305,6 +306,13 @@ def put_config(body: dict):
         apply_scanner_settings()
     except Exception as exc:
         log.warning("Could not apply MaRCoS settings: %s", exc)
+    try:
+        # The Scanner IP is board 0's address in the MaRCoS board list.
+        import external.seq.adjustments_acq.config as acq_cfg
+
+        acq_cfg.update()
+    except Exception as exc:
+        log.warning("Could not reload the MaRCoS board list: %s", exc)
     return cfg.model_dump()
 
 
@@ -343,21 +351,24 @@ def put_acq_config(body: dict):
 
 
 @app.post("/device/ping", response_model=DevicePingResponse)
-def device_ping() -> DevicePingResponse:
+def device_ping(body: Optional[DevicePingRequest] = Body(default=None)) -> DevicePingResponse:
+    """Ping one MaRCoS board: the Scanner IP (board 0) unless the body names another."""
     from services.ui.control import marcos_port
 
     config.load_config()
     cfg = config.get_config()
-    probe = probe_scanner(cfg.scanner_ip, port=marcos_port())
+    ip = (body.ip.strip() if body and body.ip else "") or cfg.scanner_ip
+    port = body.port if body and body.port else marcos_port()
+    probe = probe_scanner(ip, port=port)
     if probe.get("method") == "tcp":
-        log.info("MaRCoS server running · %s", cfg.scanner_ip)
-        log.info("%s", probe.get("detail") or f"MaRCoS at {cfg.scanner_ip}:{marcos_port()}")
+        log.info("MaRCoS server running · %s", ip)
+        log.info("%s", probe.get("detail") or f"MaRCoS at {ip}:{port}")
     elif probe.get("reachable"):
-        log.warning("Red Pitaya reachable · MaRCoS not listening on %s:%s", cfg.scanner_ip, marcos_port())
+        log.warning("Red Pitaya reachable · MaRCoS not listening on %s:%s", ip, port)
     else:
-        log.warning("Scanner unreachable · %s", cfg.scanner_ip)
+        log.warning("Scanner unreachable · %s", ip)
     return DevicePingResponse(
-        ip=cfg.scanner_ip,
+        ip=ip,
         ok=bool(probe["reachable"]),
         simulation=cfg.is_hardware_simulation(),
         reachable=bool(probe["reachable"]),
@@ -464,8 +475,8 @@ def scan_psd(scan_id: str, body: ScanPsdRequest = Body(default_factory=ScanPsdRe
     return ScanPsdResponse(folder=folder)
 
 
-def _emi_context() -> tuple[bool, Optional[dict], float]:
-    """Simulation flag, configured boards, and Larmor frequency (Hz) for the EMI tool."""
+def _emi_context() -> tuple[bool, Optional[dict], Optional[dict], float]:
+    """Simulation flag, board addresses, receiver roles, and Larmor frequency (Hz) for the EMI tool."""
     from sequences.common.util import reading_json_parameter
 
     try:
@@ -475,12 +486,13 @@ def _emi_context() -> tuple[bool, Optional[dict], float]:
     try:
         import external.seq.adjustments_acq.config as acq_cfg
 
-        boards = acq_cfg.MARCOS_BOARDS
+        boards = acq_cfg.MARCOS_BOARD_ADDRESSES or None
+        roles = acq_cfg.MARCOS_RX_ROLES
     except Exception as exc:
         log.warning("Could not read the MaRCoS board list: %s", exc)
-        boards = None
+        boards, roles = None, None
     larmor_mhz = reading_json_parameter().rf_parameters.larmor_frequency_MHz
-    return simulation, boards, float(larmor_mhz) * 1e6
+    return simulation, boards, roles, float(larmor_mhz) * 1e6
 
 
 @app.get("/emi/status", response_model=EmiStatus)
@@ -488,8 +500,8 @@ def emi_status():
     """Report whether the EMI visualizer can measure, and on which channels."""
     from services.api import emi, pipeline
 
-    simulation, boards, _ = _emi_context()
-    return emi.status(simulation=simulation, boards=boards, busy=pipeline.acq_busy())
+    simulation, boards, roles, _ = _emi_context()
+    return emi.status(simulation=simulation, boards=boards, busy=pipeline.acq_busy(), roles=roles)
 
 
 @app.post("/emi/measure", response_model=EmiCapture)
@@ -499,7 +511,7 @@ def emi_measure(body: EmiMeasureRequest = Body(default_factory=EmiMeasureRequest
 
     if pipeline.acq_busy():
         raise HTTPException(409, "A scan is running. Wait for it to finish before measuring EMI.")
-    simulation, boards, center_frequency_hz = _emi_context()
+    simulation, boards, roles, center_frequency_hz = _emi_context()
     acquire = None
     if not simulation:
         from services.api import emi_acq
@@ -515,6 +527,7 @@ def emi_measure(body: EmiMeasureRequest = Body(default_factory=EmiMeasureRequest
             adc_duration_us=body.adc_duration_us,
             averages=body.averages,
             include_reference=body.include_reference,
+            roles=roles,
         )
     except emi.EmiBusy as exc:
         raise HTTPException(409, str(exc)) from exc

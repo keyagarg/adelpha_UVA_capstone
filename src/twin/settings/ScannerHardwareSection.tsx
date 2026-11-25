@@ -1,17 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SatelliteDish, Play } from "lucide-react";
+import { SatelliteDish, Play, Plus, Trash2 } from "lucide-react";
 
 import {
   fetchAcqConfig,
   fetchConfig,
+  formatDevicePingStatus,
   pingDevice,
   saveAcqConfig,
   saveConfig,
   startMarcosServer,
   type AcqConfig,
+  type MarcosBoard,
   type MriConfig,
+  type RxRole,
 } from "../mri/api";
 import { Select, SettingsRow, SettingsSection, Switch, TextInput } from "./controls";
+import {
+  RX_ROLE_OPTIONS,
+  addBoard,
+  boardProblems,
+  boardSummary,
+  boardsOrDefault,
+  removeBoard,
+  setBoard0Tx,
+  updateBoard,
+} from "./marcosBoards";
 
 function NumberField({
   label,
@@ -44,6 +57,8 @@ export function ScannerHardwareSection({ compact = false }: { compact?: boolean 
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
+  // Ping result per board, keyed by board id; cleared when boards are added or removed.
+  const [boardPings, setBoardPings] = useState<Record<number, string>>({});
   const operatorTimer = useRef<number | null>(null);
   const acqTimer = useRef<number | null>(null);
 
@@ -127,13 +142,32 @@ export function ScannerHardwareSection({ compact = false }: { compact?: boolean 
   }
 
   const simulation = operator.hardware_simulation === "True";
+  const boards = boardsOrDefault(acq.marcos_parameters.boards);
+  const problems = boardProblems(boards, operator.scanner_ip, acq.marcos_parameters.port);
+  const saveBoards = (next: MarcosBoard[]) =>
+    queueAcq({ ...acq, marcos_parameters: { ...acq.marcos_parameters, boards: next } });
+  const changeBoardCount = (next: MarcosBoard[]) => {
+    setBoardPings({});
+    saveBoards(next);
+  };
+
+  const pingBoard = async (index: number) => {
+    const board = boards[index];
+    setBoardPings((prev) => ({ ...prev, [index]: "Pinging…" }));
+    try {
+      const result = await pingDevice({ ip: board.ip.trim(), port: board.port });
+      setBoardPings((prev) => ({ ...prev, [index]: formatDevicePingStatus(result) }));
+    } catch (err) {
+      setBoardPings((prev) => ({ ...prev, [index]: err instanceof Error ? err.message : "Ping failed" }));
+    }
+  };
 
   return (
     <>
       <SettingsSection title="Scanner">
         {error ? <p className="settings-about">{error}</p> : null}
         {saving ? <p className="settings-about">Saving…</p> : null}
-        <SettingsRow title="Scanner IP" layout="stack">
+        <SettingsRow title="Scanner IP" description="Board 0's address in MaRCoS boards." layout="stack">
           <TextInput
             label="Scanner IP"
             value={operator.scanner_ip}
@@ -161,6 +195,127 @@ export function ScannerHardwareSection({ compact = false }: { compact?: boolean 
           </button>
         </SettingsRow>
       </SettingsSection>
+      {!compact ? (
+        <>
+          <SettingsSection
+            title="MaRCoS boards"
+            description="Board 0 is the scanner above: it plays the RF pulse and gradients and triggers the other boards. Mark each receiver MRI (recorded by scans), EMI (recorded by the EMI tool) or Off. Only FID records on more than one board; other sequences record on board 0's MRI receiver."
+            actions={
+              <button type="button" className="settings-btn" onClick={() => changeBoardCount(addBoard(boards))}>
+                <Plus size={14} strokeWidth={1.8} aria-hidden />
+                Add board
+              </button>
+            }
+          >
+            <p className="settings-about">{boardSummary(boards)}</p>
+            {problems.map((problem) => (
+              <p key={problem} className="settings-about">
+                {problem}
+              </p>
+            ))}
+          </SettingsSection>
+          {boards.map((board, index) => (
+            <SettingsSection
+              key={index}
+              title={index === 0 ? "Board 0 · controller" : `Board ${index} · follower`}
+              description={
+                index === 0
+                  ? `Scanner IP ${operator.scanner_ip || "(not set)"}, port ${acq.marcos_parameters.port}.`
+                  : "Receive only. Starts when board 0's trigger arrives."
+              }
+              actions={
+                index === 0 ? undefined : (
+                  <>
+                    <button
+                      type="button"
+                      className="settings-btn"
+                      onClick={() => void pingBoard(index)}
+                      disabled={!board.ip.trim()}
+                    >
+                      <SatelliteDish size={14} strokeWidth={1.8} aria-hidden />
+                      Ping
+                    </button>
+                    <button type="button" className="settings-btn" onClick={() => changeBoardCount(removeBoard(boards, index))}>
+                      <Trash2 size={14} strokeWidth={1.8} aria-hidden />
+                      Remove
+                    </button>
+                  </>
+                )
+              }
+            >
+              {index > 0 && boardPings[index] ? <p className="settings-about">{boardPings[index]}</p> : null}
+              {index > 0 ? (
+                <>
+                  <SettingsRow title="Address" layout="stack">
+                    <TextInput
+                      label={`Board ${index} address`}
+                      value={board.ip}
+                      placeholder="169.254.93.61"
+                      onChange={(ip) => saveBoards(updateBoard(boards, index, { ip }))}
+                    />
+                  </SettingsRow>
+                  <SettingsRow title="Port" description="MaRCoS server port. Default 11111.">
+                    <NumberField
+                      label={`Board ${index} port`}
+                      value={board.port}
+                      step="1"
+                      onChange={(port) => saveBoards(updateBoard(boards, index, { port: Math.round(port) }))}
+                    />
+                  </SettingsRow>
+                </>
+              ) : null}
+              <SettingsRow title="RX0">
+                <Select
+                  compact
+                  label={`Board ${index} RX0`}
+                  value={board.rx0}
+                  options={RX_ROLE_OPTIONS}
+                  onChange={(rx0) => saveBoards(updateBoard(boards, index, { rx0: rx0 as RxRole }))}
+                />
+              </SettingsRow>
+              <SettingsRow title="RX1">
+                <Select
+                  compact
+                  label={`Board ${index} RX1`}
+                  value={board.rx1}
+                  options={RX_ROLE_OPTIONS}
+                  onChange={(rx1) => saveBoards(updateBoard(boards, index, { rx1: rx1 as RxRole }))}
+                />
+              </SettingsRow>
+              {index === 0 ? (
+                <>
+                  <SettingsRow title="TX0" description="Plays the RF pulse. At least one TX output stays on.">
+                    <Switch
+                      label="Board 0 TX0"
+                      checked={board.tx0}
+                      disabled={board.tx0 && !board.tx1}
+                      onChange={(on) => saveBoards(setBoard0Tx(boards, 0, on))}
+                    />
+                  </SettingsRow>
+                  <SettingsRow title="TX1" description="Plays the same RF pulse on the second TX output.">
+                    <Switch
+                      label="Board 0 TX1"
+                      checked={board.tx1}
+                      disabled={board.tx1 && !board.tx0}
+                      onChange={(on) => saveBoards(setBoard0Tx(boards, 1, on))}
+                    />
+                  </SettingsRow>
+                </>
+              ) : null}
+              <SettingsRow
+                title="CIC gain shift"
+                description="Programs the receive filter's gain shift (set_cic_shift). Turn on if this board's receivers read close to zero."
+              >
+                <Switch
+                  label={`Board ${index} CIC gain shift`}
+                  checked={board.set_cic_shift}
+                  onChange={(set_cic_shift) => saveBoards(updateBoard(boards, index, { set_cic_shift }))}
+                />
+              </SettingsRow>
+            </SettingsSection>
+          ))}
+        </>
+      ) : null}
       <SettingsSection title="RF" description="Larmor is the magnet frequency. RF max is the Hz that maps to transmit DAC ±1 (MRI4ALL default 7661.29 Hz). Lowering RF max increases TX voltage for the same pulse.">
         <SettingsRow title="Larmor frequency" description="Center frequency in MHz. MRI4ALL Z1 default 15.58 MHz (~366 mT). Use your measured Larmor.">
           <NumberField

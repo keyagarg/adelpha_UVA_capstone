@@ -28,8 +28,14 @@ _MIN_TR_MS = 250
 
 
 def _board_settings(boards: dict, channels: List[Tuple[int, int, str]]) -> dict:
-    """``MARCOS_BOARDS`` with each board's receivers replaced by the EMI ones."""
-    wanted: Dict[int, List[int]] = {}
+    """``boards`` with each board's receivers replaced by the EMI ones.
+
+    Board 0 is always included, even with no EMI receiver of its own: it is the
+    controller that triggers the other boards.
+    """
+    if 0 not in boards:
+        raise EmiUnavailable("Board 0 needs a Scanner IP: it triggers the other boards.")
+    wanted: Dict[int, List[int]] = {0: []}
     for board, channel, _role in channels:
         wanted.setdefault(board, []).append(channel)
     return {board: {**boards[board], "rx_channels": tuple(sorted(chs))} for board, chs in sorted(wanted.items())}

@@ -50,8 +50,12 @@ class EmiBusy(EmiUnavailable):
 
 
 NO_BOARDS_REASON = (
-    "No MaRCoS boards are configured. Set MARCOS_BOARDS in "
-    "sidecar/console/external/seq/adjustments_acq/config.py, or turn on Hardware Simulation."
+    "No MaRCoS boards are configured (MARCOS_BOARDS is empty). Add them in "
+    "Settings > Imaging Console > MaRCoS boards, or turn on Hardware Simulation."
+)
+NO_EMI_CHANNEL_REASON = (
+    "No receiver is marked EMI. Mark one in Settings > Imaging Console > MaRCoS boards, "
+    "or turn on Hardware Simulation."
 )
 
 # Held for the length of one capture, and by the acquisition pipeline for the
@@ -66,14 +70,28 @@ AcquireFn = Callable[
 ]
 
 
-def emi_channels(boards: Optional[dict], include_reference: bool = False) -> List[Tuple[int, int, str]]:
+def emi_channels(
+    boards: Optional[dict],
+    include_reference: bool = False,
+    roles: Optional[Dict[ChannelKey, str]] = None,
+) -> List[Tuple[int, int, str]]:
     """List ``(board, channel, role)`` for every channel one capture records.
 
     ``boards`` is ``MARCOS_BOARDS`` from the acquisition config: a dict keyed
     by board id, or ``None`` when multi-board is not configured. With ``None``
     the full two-board layout is returned so the simulator can stand in for
     hardware that is not connected.
+
+    ``roles`` maps ``(board, channel)`` to "mri" or "emi", as set in Settings >
+    Imaging Console > MaRCoS boards. When given, the EMI channels are the ones
+    marked "emi" and the reference traces the ones marked "mri", on boards listed
+    in ``boards``. Without it the fixed ``EMI_RX_CHANNELS`` map is used.
     """
+    if roles is not None:
+        known = (lambda board: board in boards) if boards else (lambda board: True)
+        marked = [(board, channel, role) for (board, channel), role in sorted(roles.items()) if known(board)]
+        references = [(b, c, ROLE_MRI_REFERENCE) for b, c, role in marked if role == "mri"]
+        return (references if include_reference else []) + [(b, c, ROLE_EMI) for b, c, role in marked if role == "emi"]
     board_ids = sorted(EMI_RX_CHANNELS) if not boards else sorted(b for b in boards if b in EMI_RX_CHANNELS)
     channels: List[Tuple[int, int, str]] = []
     if include_reference and MRI_REFERENCE_CHANNEL[0] in board_ids:
@@ -81,6 +99,20 @@ def emi_channels(boards: Optional[dict], include_reference: bool = False) -> Lis
     for board in board_ids:
         for channel in EMI_RX_CHANNELS[board]:
             channels.append((board, channel, ROLE_EMI))
+    return channels
+
+
+def _capture_channels(
+    simulation: bool,
+    boards: Optional[dict],
+    roles: Optional[Dict[ChannelKey, str]],
+    include_reference: bool,
+) -> List[Tuple[int, int, str]]:
+    """Channels for one capture. In simulation with no receiver marked EMI, the simulator
+    shows the standard two-board layout instead."""
+    channels = emi_channels(boards, include_reference, roles)
+    if simulation and roles is not None and not any(role == ROLE_EMI for _, _, role in channels):
+        channels = emi_channels(None, include_reference)
     return channels
 
 
@@ -243,6 +275,7 @@ def measure(
     include_reference: bool = False,
     rng: Optional[np.random.Generator] = None,
     acquire: Optional[AcquireFn] = None,
+    roles: Optional[Dict[ChannelKey, str]] = None,
 ) -> dict:
     """Record one capture and return its payload.
 
@@ -255,9 +288,9 @@ def measure(
         raise EmiUnavailable(NO_BOARDS_REASON)
     if not simulation and acquire is None:
         raise EmiUnavailable("No acquisition backend is available for measured EMI captures")
-    channels = emi_channels(boards, include_reference)
-    if not channels:
-        raise EmiUnavailable("No EMI receive channels are configured")
+    channels = _capture_channels(simulation, boards, roles, include_reference)
+    if not any(role == ROLE_EMI for _, _, role in channels):
+        raise EmiUnavailable(NO_EMI_CHANNEL_REASON if roles is not None else "No EMI receive channels are configured")
     roles = {(board, channel): role for board, channel, role in channels}
 
     if not hardware_lock.acquire(blocking=False):
@@ -323,15 +356,24 @@ def save_latest(capture_id: str, emi_dir) -> dict:
     return {"capture_id": capture_id, "folder": str(folder), "files": files}
 
 
-def status(*, simulation: bool, boards: Optional[dict], busy: bool) -> dict:
+def status(
+    *,
+    simulation: bool,
+    boards: Optional[dict],
+    busy: bool,
+    roles: Optional[Dict[ChannelKey, str]] = None,
+) -> dict:
     """Whether the EMI tool can measure right now, and on which channels."""
+    listed = _capture_channels(simulation, boards, roles, include_reference=True)
     channels = [
         {"board": board, "channel": f"rx{channel}", "label": channel_label(board, channel), "role": role}
-        for board, channel, role in emi_channels(boards, include_reference=True)
+        for board, channel, role in listed
     ]
     reason = ""
     if not simulation and not boards:
         reason = NO_BOARDS_REASON
+    elif not simulation and not any(role == ROLE_EMI for _, _, role in listed):
+        reason = NO_EMI_CHANNEL_REASON
     elif busy:
         reason = "A scan is running."
     return {

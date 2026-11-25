@@ -678,8 +678,14 @@ export function formatDevicePingStatus(ping: DevicePing): string {
   return ping.detail || `Scanner unreachable (${ping.ip})`;
 }
 
-export async function pingDevice(): Promise<DevicePing> {
-  return mriFetch("/device/ping", { method: "POST" });
+/** Ping the Scanner IP (board 0), or another MaRCoS board when `target` is given. */
+export async function pingDevice(target?: { ip: string; port?: number }): Promise<DevicePing> {
+  return mriFetch(
+    "/device/ping",
+    target
+      ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target) }
+      : { method: "POST" },
+  );
 }
 
 export type MarcosStartResult = {
@@ -946,6 +952,28 @@ export async function saveConfig(body: Partial<MriConfig>): Promise<MriConfig> {
   });
 }
 
+/** What a board's receiver records: scans ("mri"), the EMI tool ("emi"), or nothing. */
+export type RxRole = "off" | "mri" | "emi";
+
+/**
+ * One Red Pitaya in Settings > Imaging Console > MaRCoS boards. The list index is the
+ * board id. Board 0 is the controller: it uses the Scanner IP and MaRCoS port, plays the
+ * RF pulse and gradients, and triggers the other boards.
+ */
+export type MarcosBoard = {
+  /** Boards 1+; board 0 uses the Scanner IP. */
+  ip: string;
+  /** Boards 1+; board 0 uses marcos_parameters.port. */
+  port: number;
+  rx0: RxRole;
+  rx1: RxRole;
+  /** Board 0 only: the TX outputs that play the RF pulse. */
+  tx0: boolean;
+  tx1: boolean;
+  /** Program the receive filter's gain shift (marcos_client set_cic_shift). */
+  set_cic_shift: boolean;
+};
+
 export type AcqConfig = {
   rf_parameters: {
     larmor_frequency_MHz: number;
@@ -970,6 +998,8 @@ export type AcqConfig = {
     gpa_fhdo_current_per_volt: number;
     flocra_pulseq_path: string;
     initialize_gpa?: boolean;
+    /** Absent from consoles older than the board settings. */
+    boards?: MarcosBoard[];
   };
 };
 
